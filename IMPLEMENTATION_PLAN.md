@@ -28,10 +28,13 @@ Deferred until their methods are implemented and tested:
 ## Initial connection contract
 
 - Target Trino version: `483`, matching `fixture/docker-compose.yml`.
-- Coordinator: host and port, with `8080` as the default port.
+- Coordinator: host and port. The manifest currently defaults to host port
+  `5432` to match the local fixture mapping (`5432:8080`); users connecting to
+  a standard Trino deployment should set its coordinator port, commonly `8080`.
 - Context: catalog and optional schema are scoped to the connection/request.
 - Authentication: support username/password using HTTP Basic authentication
-  over HTTPS. Permit unauthenticated HTTP for the local fixture only.
+  over HTTPS. Permit unauthenticated HTTP for the local fixture only. Support
+  the host's optional CA and client certificate/key fields.
 - Catalogs and schemas are discovered from Trino and remain limited by the
   connected user's permissions.
 
@@ -42,12 +45,12 @@ configuration and document any TLS certificate requirements.
 
 | Step | Work | Status |
 |---|---|---|
-| 1 | Manifest defaults and declared capabilities | Implemented; confirm the configured port against the target deployment before release. |
+| 1 | Manifest defaults and declared capabilities | Implemented; manifest hides unsupported connection-string input and enables SSL controls. Defaults to fixture host port `5432`; production port is configurable per coordinator. |
 | 2 | Trino REST client, paging, errors, and cancellation | Implemented with protocol tests. |
 | 3 | Connection check and metadata discovery | Implemented with protocol tests. |
 | 4 | Query paging and exact typed-value conversion | Implemented with conversion tests. |
 | 5 | Protocol tests, seeded multi-catalog fixture, manual test plan | Implemented; all documented manual checks reported passed on 2026-10-14. |
-| 6 | Setup/release docs and Rust quality gates | Docs/workflow are present; formatter, Clippy, and tests passed on 2026-10-14. Prepare review and registry submission next. |
+| 6 | Setup/release docs and Rust quality gates | Current registry submission flow and supported release targets are documented. GitHub release assets and registry submission remain to be created after release validation. |
 
 ## Original implementation order
 

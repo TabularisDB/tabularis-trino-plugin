@@ -192,6 +192,19 @@ Expected: a JSON-RPC success response with rows `n = 11` through `n = 15`,
 docker compose -f fixture/docker-compose.yml down
 ```
 
+## 10. Optional HTTPS and authentication check before release
+
+The local fixture uses unauthenticated HTTP, so it does not verify the secure
+authentication path. Against a Trino coordinator configured for HTTPS and
+Basic authentication, create a separate connection with HTTPS enabled,
+username, password, and (if needed) a CA certificate configured. Test the
+connection, run `SELECT 1`, and confirm that a wrong password produces a useful
+authentication error. The plugin rejects passwords over plain HTTP. If the
+server requires mutual TLS, configure both the client certificate and private
+key.
+
+**Status: ☐ Pending a live HTTPS/Basic authentication check.**
+
 ## Record the result
 
 For each check, record pass/fail and include the Tabularis version, OS, Trino

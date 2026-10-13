@@ -118,6 +118,9 @@ impl MockServer {
             username: Some("tester".into()),
             password: None,
             ssl_mode: None,
+            ssl_ca: None,
+            ssl_cert: None,
+            ssl_key: None,
         })
         .expect("construct Trino client")
     }
@@ -314,12 +317,68 @@ fn rejects_password_authentication_over_plain_http() {
         username: Some("tester".into()),
         password: Some("secret".into()),
         ssl_mode: None,
+        ssl_ca: None,
+        ssl_cert: None,
+        ssl_key: None,
     });
     let error = match result {
         Ok(_) => panic!("password authentication over HTTP should be rejected"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("requires HTTPS"));
+    assert!(error.message.contains("requires HTTPS"));
+}
+
+#[test]
+fn reports_invalid_custom_ca_certificate_file() {
+    let ca_path = std::env::temp_dir().join(format!("trino-invalid-ca-{}.pem", std::process::id()));
+    std::fs::write(
+        &ca_path,
+        "-----BEGIN CERTIFICATE-----\nnot valid\n-----END CERTIFICATE-----",
+    )
+    .expect("write invalid CA fixture");
+    let result = Client::connect(ConnectionParams {
+        driver: Some("trino".into()),
+        host: Some("https://127.0.0.1:8080".into()),
+        port: None,
+        database: None,
+        username: Some("tester".into()),
+        password: None,
+        ssl_mode: Some("require".into()),
+        ssl_ca: Some(ca_path.to_string_lossy().into_owned()),
+        ssl_cert: None,
+        ssl_key: None,
+    });
+    let error = match result {
+        Ok(_) => panic!("invalid CA certificate should fail validation"),
+        Err(error) => error,
+    };
+    std::fs::remove_file(ca_path).expect("remove invalid CA fixture");
+    assert!(
+        error.message.contains("could not create HTTP client"),
+        "unexpected error: {}",
+        error.message
+    );
+}
+
+#[test]
+fn requires_client_certificate_and_key_together() {
+    let result = Client::connect(ConnectionParams {
+        driver: Some("trino".into()),
+        host: Some("https://127.0.0.1:8080".into()),
+        port: None,
+        database: None,
+        username: Some("tester".into()),
+        password: None,
+        ssl_mode: Some("require".into()),
+        ssl_ca: None,
+        ssl_cert: Some("certificate PEM".into()),
+        ssl_key: None,
+    });
+    let error = match result {
+        Ok(_) => panic!("client certificate without key should fail validation"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("requires its private key"));
 }
 
 #[test]
@@ -706,6 +765,9 @@ fn query_cancellation_reaches_trino_and_returns_cancelled_error() {
             username: Some("tester".into()),
             password: None,
             ssl_mode: None,
+            ssl_ca: None,
+            ssl_cert: None,
+            ssl_key: None,
         })
         .expect("construct Trino client");
         client.set_cancellation(worker_cancellation);
@@ -765,6 +827,9 @@ fn cancellation_during_statement_submission_cancels_after_trino_returns_next_uri
             username: Some("tester".into()),
             password: None,
             ssl_mode: None,
+            ssl_ca: None,
+            ssl_cert: None,
+            ssl_key: None,
         })
         .expect("construct Trino client");
         client.set_cancellation(worker_cancellation);

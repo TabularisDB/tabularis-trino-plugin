@@ -14,6 +14,9 @@ pub struct ConnectionParams {
     pub username: Option<String>,
     pub password: Option<String>,
     pub ssl_mode: Option<String>,
+    pub ssl_ca: Option<String>,
+    pub ssl_cert: Option<String>,
+    pub ssl_key: Option<String>,
 }
 
 impl ConnectionParams {
@@ -37,6 +40,9 @@ impl ConnectionParams {
             username: get_str("username"),
             password: get_str("password"),
             ssl_mode: get_str("ssl_mode"),
+            ssl_ca: get_str("ssl_ca"),
+            ssl_cert: get_str("ssl_cert"),
+            ssl_key: get_str("ssl_key"),
         }
     }
 }

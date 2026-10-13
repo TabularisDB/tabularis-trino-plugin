@@ -1,6 +1,7 @@
 {
   "$schema": "https://registry.tabularis.dev/manifest.schema.json?kind=driver",
-  "name": "trino",
+  "id": "trino",
+  "name": "Trino",
   "version": "0.1.0",
   "description": "Tabularis driver plugin for Trino",
   "kind": "driver",
@@ -16,12 +17,14 @@
     "file_based": false,
     "folder_based": false,
     "no_connection_required": false,
+    "connection_string": false,
     "identifier_quote": "\"",
     "alter_primary_key": false,
     "alter_column": false,
     "create_foreign_keys": false,
     "manage_tables": false,
-    "readonly": true
+    "readonly": true,
+    "supports_ssl": true
   },
   "data_types": [
     {

@@ -4,6 +4,7 @@
 //! from the `nextUri` returned by Trino. The client keeps the last `nextUri`
 //! so callers can cancel an in-flight query with `cancel_query`.
 
+use std::fs;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -202,9 +203,66 @@ impl Client {
             }
         }
 
-        let http = HttpClient::builder()
+        let mut http_builder = HttpClient::builder()
             .timeout(REQUEST_TIMEOUT)
-            .cookie_store(true)
+            .cookie_store(true);
+        if let Some(ca) = params
+            .ssl_ca
+            .as_deref()
+            .map(str::trim)
+            .filter(|ca| !ca.is_empty())
+        {
+            let ca_pem = load_pem(ca, "Trino CA certificate")?;
+            if !ca_pem
+                .windows(b"-----BEGIN CERTIFICATE-----".len())
+                .any(|window| window == b"-----BEGIN CERTIFICATE-----")
+            {
+                return Err(PluginError::invalid_params(
+                    "invalid Trino CA certificate PEM: no CERTIFICATE block was found",
+                ));
+            }
+            let certificate = reqwest::Certificate::from_pem(&ca_pem).map_err(|error| {
+                PluginError::invalid_params(format!("invalid Trino CA certificate PEM: {error}"))
+            })?;
+            http_builder = http_builder.add_root_certificate(certificate);
+        }
+
+        let client_certificate = params
+            .ssl_cert
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let client_key = params
+            .ssl_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        match (client_certificate, client_key) {
+            (Some(certificate), Some(key)) => {
+                let mut identity_pem = load_pem(certificate, "Trino client certificate")?;
+                identity_pem.push(b'\n');
+                identity_pem.extend(load_pem(key, "Trino client private key")?);
+                let identity = reqwest::Identity::from_pem(&identity_pem).map_err(|error| {
+                    PluginError::invalid_params(format!(
+                        "invalid Trino client certificate or key PEM: {error}"
+                    ))
+                })?;
+                http_builder = http_builder.identity(identity);
+            }
+            (Some(_), None) => {
+                return Err(PluginError::invalid_params(
+                    "a Trino client certificate requires its private key",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(PluginError::invalid_params(
+                    "a Trino client private key requires its certificate",
+                ));
+            }
+            (None, None) => {}
+        }
+
+        let http = http_builder
             .build()
             .map_err(|err| PluginError::internal(format!("could not create HTTP client: {err}")))?;
 
@@ -442,6 +500,17 @@ impl Client {
         }
         Ok(url)
     }
+}
+
+fn load_pem(value: &str, description: &str) -> Result<Vec<u8>, PluginError> {
+    if value.contains("-----BEGIN ") {
+        return Ok(value.as_bytes().to_vec());
+    }
+    fs::read(value).map_err(|error| {
+        PluginError::invalid_params(format!(
+            "could not read {description} file '{value}': {error}"
+        ))
+    })
 }
 
 fn preserve_exact_values(result: &mut QueryResult) {
