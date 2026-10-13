@@ -8,9 +8,15 @@ CREATE TABLE memory.demo.types_test AS
 SELECT
   CAST('1234567890.123456789' AS DECIMAL(38,9)) AS dec_col,
   CAST(9223372036854775807 AS BIGINT) AS big_col,
-  ARRAY[1, 2, 3] AS arr_col,
-  MAP(ARRAY['a', 'b'], ARRAY[1, 2]) AS map_col,
-  CAST(ROW(1, 'x') AS ROW(id INTEGER, name VARCHAR)) AS row_col,
+  ARRAY[
+    CAST(1.123456789 AS DECIMAL(20, 9)),
+    CAST(2.987654321 AS DECIMAL(20, 9))
+  ] AS arr_col,
+  MAP(
+    ARRAY['a', 'b'],
+    ARRAY[CAST(1.123456789 AS DECIMAL(20, 9)), CAST(2.987654321 AS DECIMAL(20, 9))]
+  ) AS map_col,
+  CAST(ROW(9223372036854775807, 'x') AS ROW(id BIGINT, name VARCHAR)) AS row_col,
   CAST(NULL AS VARCHAR) AS null_col;
 
 CREATE TABLE memory.demo.many_rows AS

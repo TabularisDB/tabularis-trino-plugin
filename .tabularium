@@ -10,8 +10,8 @@
   "default_username": "",
   "executable": "trino-plugin",
   "capabilities": {
-    "schemas": false,
-    "views": false,
+    "schemas": true,
+    "views": true,
     "routines": false,
     "file_based": false,
     "folder_based": false,

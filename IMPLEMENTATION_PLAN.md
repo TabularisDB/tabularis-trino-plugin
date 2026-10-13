@@ -1,0 +1,87 @@
+# Trino driver v1 implementation plan
+
+## Scope
+
+The first release focuses on connecting to Trino, browsing permitted metadata,
+and running SQL from the Tabularis editor and notebooks.
+
+Included:
+
+- Test a connection and report actionable connection or permission errors.
+- List catalogs as Tabularis databases, then list schemas, tables, columns, and
+  views using the current connection's catalog and schema context.
+- Execute SQL and return complete, ordered results across every Trino response
+  page, including responses that contain no rows.
+- Convert NULL, DECIMAL, large integer, ARRAY, MAP, and ROW values without
+  silently losing precision.
+- Cancel a running query through the Trino client protocol.
+- Ship a reproducible local fixture and a manual test plan.
+
+Deferred until their methods are implemented and tested:
+
+- Grid row editing and CRUD.
+- DDL actions.
+- Visual EXPLAIN.
+- Presto compatibility (evaluate separately; do not assume Trino compatibility
+  implies Presto compatibility).
+
+## Initial connection contract
+
+- Target Trino version: `483`, matching `fixture/docker-compose.yml`.
+- Coordinator: host and port, with `8080` as the default port.
+- Context: catalog and optional schema are scoped to the connection/request.
+- Authentication: support username/password using HTTP Basic authentication
+  over HTTPS. Permit unauthenticated HTTP for the local fixture only.
+- Catalogs and schemas are discovered from Trino and remain limited by the
+  connected user's permissions.
+
+Before release, verify the authentication choice against the deployed Trino
+configuration and document any TLS certificate requirements.
+
+## Implementation progress
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Manifest defaults and declared capabilities | Implemented; confirm the configured port against the target deployment before release. |
+| 2 | Trino REST client, paging, errors, and cancellation | Implemented with protocol tests. |
+| 3 | Connection check and metadata discovery | Implemented with protocol tests. |
+| 4 | Query paging and exact typed-value conversion | Implemented with conversion tests. |
+| 5 | Protocol tests, seeded multi-catalog fixture, manual test plan | Implemented; all documented manual checks reported passed on 2026-10-14. |
+| 6 | Setup/release docs and Rust quality gates | Docs/workflow are present; formatter, Clippy, and tests passed on 2026-10-14. Prepare review and registry submission next. |
+
+## Original implementation order
+
+1. Correct `.tabularium` defaults and capabilities for Trino and schema browsing.
+2. Implement the REST client: submit statements, follow `nextUri`, handle
+   queued/running/error responses, and cancel running queries.
+3. Implement a real connection check and metadata discovery for catalogs,
+   schemas, tables, columns, and views.
+4. Implement query result paging and typed value conversion.
+5. Add protocol and conversion tests; expand the fixture to cover a federated
+   query across `memory` and `tpch` and add a manual test plan.
+6. Update installation and release documentation, run the Rust quality gates,
+   then prepare the plugin release/registry submission.
+
+## Validation gates
+
+Run before proposing the implementation for review:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Manually verify connection success/failure, permission-limited discovery,
+editor and notebook queries, multi-page ordering (including an empty first
+page), federated queries, cancellation, and representative scalar and nested
+values using the local fixture and a documented Trino deployment. The user
+reported completing all steps in `MANUAL_TEST_PLAN.md` on 2026-10-14; deployment
+version and OS details were not recorded.
+
+## Contributor coordination
+
+Implementation repository: https://github.com/TabularisDB/tabularis-trino-plugin
+
+Post this repository link on the Trino proposal/bounty before implementation
+work begins so contributors can coordinate.
