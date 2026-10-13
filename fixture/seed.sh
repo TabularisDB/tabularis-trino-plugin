@@ -1,0 +1,1 @@
+docker exec trino-fixture trino -f /fixture/seed.sql
