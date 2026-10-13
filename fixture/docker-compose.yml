@@ -3,7 +3,7 @@ services:
     image: trinodb/trino:483
     container_name: trino-fixture
     ports:
-      - "8080:8080"
+      - "5432:8080"
     volumes:
       - ./catalog:/etc/trino/catalog
       - ./seed.sql:/fixture/seed.sql

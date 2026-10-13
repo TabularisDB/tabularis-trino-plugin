@@ -2,12 +2,17 @@
 
 use serde_json::{json, Value};
 
+use crate::client::QueryCancellation;
 use crate::handlers;
 
 /// Parse one JSON-RPC line and return the response value (serialised
 /// downstream by `main.rs`). Never panics — parse errors and method
 /// failures are surfaced as JSON-RPC error responses.
 pub fn handle_line(line: &str) -> Value {
+    handle_line_with_cancellation(line, None)
+}
+
+pub fn handle_line_with_cancellation(line: &str, cancellation: Option<QueryCancellation>) -> Value {
     let request: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(err) => return error_response(Value::Null, -32700, &format!("parse error: {err}")),
@@ -26,7 +31,7 @@ pub fn handle_line(line: &str) -> Value {
         "ping" => ok_response(id, Value::Null),
         "test_connection" => handlers::query::test_connection(id, &params),
 
-        // Metadata — return empty arrays so the driver loads cleanly.
+        // Metadata discovery is backed by Trino's catalog and information_schema queries.
         "get_databases" => handlers::metadata::get_databases(id, &params),
         "get_schemas" => handlers::metadata::get_schemas(id, &params),
         "get_tables" => handlers::metadata::get_tables(id, &params),
@@ -43,11 +48,20 @@ pub fn handle_line(line: &str) -> Value {
         "get_all_columns_batch" => handlers::metadata::get_all_columns_batch(id, &params),
         "get_all_foreign_keys_batch" => handlers::metadata::get_all_foreign_keys_batch(id, &params),
 
-        // View mutation — not implemented by default.
-        "create_view" | "alter_view" | "drop_view" => not_implemented(id, &method),
+        // View discovery is supported; view mutation is not implemented yet.
+        "create_view" | "alter_view" | "drop_view" => error_response(
+            id,
+            -32601,
+            "Method not found: view mutation is not supported",
+        ),
 
-        // Query execution — critical but needs a real driver.
-        "execute_query" => handlers::query::execute_query(id, &params),
+        // Query execution uses Trino's paginated client protocol.
+        "execute_query" => match cancellation {
+            Some(cancellation) => {
+                handlers::query::execute_query_with_cancellation(id, &params, cancellation)
+            }
+            None => handlers::query::execute_query(id, &params),
+        },
         "explain_query" => handlers::query::explain_query(id, &params),
 
         // CRUD.

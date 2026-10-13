@@ -1,27 +1,608 @@
-//! Driver connection layer.
+//! Trino's HTTP client protocol.
 //!
-//! This is where you wire the crate that actually talks to your database.
-//! For a pure example: https://github.com/TabularisDB/tabularis-duckdb-plugin
-//!
-//! The scaffolder leaves this file almost empty on purpose — your database
-//! library dictates the shape of `Client` and its methods.
+//! A statement is submitted to `/v1/statement`; result pages are then fetched
+//! from the `nextUri` returned by Trino. The client keeps the last `nextUri`
+//! so callers can cancel an in-flight query with `cancel_query`.
+
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::thread;
+use std::time::Duration;
+
+use reqwest::blocking::{Client as HttpClient, RequestBuilder, Response};
+use reqwest::header::RETRY_AFTER;
+use reqwest::StatusCode;
+use serde_json::Value;
 
 use crate::error::PluginError;
 use crate::models::ConnectionParams;
 
-#[allow(dead_code)]
+const DEFAULT_PORT: u16 = 8080;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_TRANSIENT_RETRIES: usize = 5;
+
 pub struct Client {
-    // TODO: hold the real connection/pool here.
-    #[allow(dead_code)]
+    http: HttpClient,
+    endpoint: reqwest::Url,
     params: ConnectionParams,
+    username: String,
+    cancellation: QueryCancellation,
+}
+
+/// Cancellation state shared between the stdio dispatcher and one executing
+/// query. Tabularis can request cancellation while the query thread is blocked
+/// waiting for the next Trino page.
+#[derive(Clone, Default)]
+pub struct QueryCancellation {
+    cancelled: Arc<AtomicBool>,
+    current_query: Arc<Mutex<Option<reqwest::Url>>>,
+    cancel_http: Arc<Mutex<Option<CancellationHttpContext>>>,
+}
+
+#[derive(Clone)]
+struct CancellationHttpContext {
+    http: HttpClient,
+    username: String,
+    password: Option<String>,
+}
+
+impl QueryCancellation {
+    pub fn cancel(&self) -> Result<(), PluginError> {
+        self.cancelled.store(true, Ordering::SeqCst);
+        // Keep this lock through DELETE so the query worker cannot race us
+        // into sending a second cancellation request for the same nextUri.
+        let mut current_query = self
+            .current_query
+            .lock()
+            .map_err(|_| PluginError::internal("query cancellation state is unavailable"))?;
+        let Some(next_uri) = current_query.as_ref().cloned() else {
+            // The initial POST may still be in flight. The query thread checks
+            // this flag as soon as Trino returns a nextUri.
+            return Ok(());
+        };
+        let context = self
+            .cancel_http
+            .lock()
+            .map_err(|_| PluginError::internal("query cancellation state is unavailable"))?
+            .clone()
+            .ok_or_else(|| PluginError::internal("query cancellation client is unavailable"))?;
+
+        let mut request = context.http.delete(next_uri);
+        if let Some(password) = context.password.filter(|value| !value.is_empty()) {
+            request = request.basic_auth(context.username, Some(password));
+        }
+        let response = request.send().map_err(|error| {
+            PluginError::internal(format!("could not cancel Trino query: {error}"))
+        })?;
+        if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
+            *current_query = None;
+            Ok(())
+        } else {
+            Err(PluginError::internal(format!(
+                "Trino rejected query cancellation with HTTP {}",
+                response.status()
+            )))
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn attach_client(&self, http: HttpClient, username: String, password: Option<String>) {
+        if let Ok(mut context) = self.cancel_http.lock() {
+            *context = Some(CancellationHttpContext {
+                http,
+                username,
+                password,
+            });
+        }
+    }
+
+    fn set_next_uri(&self, next_uri: Option<reqwest::Url>) {
+        if let Ok(mut current_query) = self.current_query.lock() {
+            *current_query = next_uri;
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct QueryResult {
+    /// Column names in the order reported by Trino.
+    pub columns: Vec<String>,
+    /// Trino type names aligned with `columns` for lossless value handling.
+    pub column_types: Vec<Option<String>>,
+    /// Rows from every result page, in Trino's response order.
+    pub rows: Vec<Value>,
+    /// Trino's update count, when the statement reports one.
+    pub update_count: Option<u64>,
 }
 
 impl Client {
-    /// Build a client from connection params. Return a PluginError on failure.
-    #[allow(dead_code)]
+    /// Validate connection settings and prepare an HTTP client.
+    ///
+    /// This does not contact the coordinator; call `run_query` (for example
+    /// with `SELECT 1`) to check that the endpoint and credentials work.
     pub fn connect(params: ConnectionParams) -> Result<Self, PluginError> {
-        // TODO: implement connection.
-        // For Trino, replace with the real library call.
-        Ok(Self { params })
+        let host = params
+            .host
+            .as_deref()
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| PluginError::invalid_params("Trino coordinator host is required"))?;
+
+        let ssl_mode = params
+            .ssl_mode
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let secure = match ssl_mode.as_str() {
+            "" | "disable" | "disabled" => false,
+            "prefer" | "require" | "verify-ca" | "verify-full" => true,
+            other => {
+                return Err(PluginError::invalid_params(format!(
+                "unsupported ssl_mode '{other}'; use disable, require, verify-ca, or verify-full"
+            )))
+            }
+        };
+
+        let endpoint = if host.contains("://") {
+            reqwest::Url::parse(host).map_err(|err| {
+                PluginError::invalid_params(format!("invalid Trino coordinator URL: {err}"))
+            })?
+        } else {
+            let scheme = if secure { "https" } else { "http" };
+            let port = params.port.unwrap_or(DEFAULT_PORT);
+            reqwest::Url::parse(&format!("{scheme}://{host}:{port}/"))
+                .map_err(|err| PluginError::invalid_params(format!("invalid Trino host: {err}")))?
+        };
+
+        if !matches!(endpoint.scheme(), "http" | "https") {
+            return Err(PluginError::invalid_params(
+                "Trino coordinator URL must use http or https",
+            ));
+        }
+        if endpoint.host_str().is_none() {
+            return Err(PluginError::invalid_params(
+                "Trino coordinator URL must include a host",
+            ));
+        }
+
+        let endpoint = endpoint
+            .join("v1/statement")
+            .map_err(|err| PluginError::invalid_params(format!("invalid Trino endpoint: {err}")))?;
+        let username = params
+            .username
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("tabularis")
+            .to_string();
+
+        if params
+            .password
+            .as_ref()
+            .is_some_and(|password| !password.is_empty())
+        {
+            if endpoint.scheme() != "https" {
+                return Err(PluginError::invalid_params(
+                    "Trino password authentication requires HTTPS",
+                ));
+            }
+            if params
+                .username
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
+            {
+                return Err(PluginError::invalid_params(
+                    "a Trino username is required when a password is provided",
+                ));
+            }
+        }
+
+        let http = HttpClient::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .cookie_store(true)
+            .build()
+            .map_err(|err| PluginError::internal(format!("could not create HTTP client: {err}")))?;
+
+        let cancellation = QueryCancellation::default();
+        cancellation.attach_client(http.clone(), username.clone(), params.password.clone());
+
+        Ok(Self {
+            http,
+            endpoint,
+            params,
+            username,
+            cancellation,
+        })
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: QueryCancellation) {
+        cancellation.attach_client(
+            self.http.clone(),
+            self.username.clone(),
+            self.params.password.clone(),
+        );
+        self.cancellation = cancellation;
+    }
+
+    /// Submit SQL and collect all result pages until Trino removes `nextUri`.
+    pub fn run_query(&mut self, sql: &str) -> Result<QueryResult, PluginError> {
+        self.run_query_with_schema(sql, None)
+    }
+
+    /// Submit SQL with an optional schema context overriding the connection's
+    /// default schema. Catalog context comes from `ConnectionParams::database`.
+    pub fn run_query_with_schema(
+        &mut self,
+        sql: &str,
+        schema: Option<&str>,
+    ) -> Result<QueryResult, PluginError> {
+        if sql.trim().is_empty() {
+            return Err(PluginError::invalid_params("SQL query must not be empty"));
+        }
+        if self.cancellation.is_cancelled() {
+            return Err(Self::cancelled_error());
+        }
+
+        let response = self
+            .send_with_retries(|| {
+                let mut request = self
+                    .with_auth(self.http.post(self.endpoint.clone()))
+                    .header("X-Trino-User", &self.username)
+                    .header("X-Trino-Source", "Tabularis")
+                    .header("X-Trino-Client-Info", "Tabularis Trino plugin")
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(sql.to_string());
+                if let Some(catalog) = self
+                    .params
+                    .database
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                {
+                    request = request.header("X-Trino-Catalog", catalog);
+                }
+                if let Some(schema) = schema.filter(|value| !value.is_empty()) {
+                    request = request.header("X-Trino-Schema", schema);
+                }
+                request.send()
+            })
+            .map_err(|err| {
+                PluginError::internal(format!("could not submit query to Trino: {err}"))
+            })?;
+
+        let mut page = self.read_response(response)?;
+        let mut result = QueryResult::default();
+        loop {
+            let next_url = page
+                .get("nextUri")
+                .and_then(Value::as_str)
+                .map(|next_uri| self.validate_next_uri(next_uri))
+                .transpose()?;
+            self.cancellation.set_next_uri(next_url.clone());
+            if self.cancellation.is_cancelled() {
+                self.cancel_query()?;
+                return Err(Self::cancelled_error());
+            }
+            self.collect_page(&page, &mut result)?;
+            let Some(next_url) = next_url else {
+                preserve_exact_values(&mut result);
+                return Ok(result);
+            };
+
+            let response = match self
+                .send_with_retries(|| self.with_auth(self.http.get(next_url.clone())).send())
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    let _ = self.cancel_query();
+                    return Err(PluginError::internal(format!(
+                        "failed while fetching Trino query results: {err}"
+                    )));
+                }
+            };
+            page = match self.read_response(response) {
+                Ok(page) => page,
+                Err(err) => {
+                    let _ = self.cancel_query();
+                    return Err(err);
+                }
+            };
+        }
+    }
+
+    /// Cancel the currently tracked Trino query, if it has a `nextUri`.
+    pub fn cancel_query(&mut self) -> Result<(), PluginError> {
+        self.cancellation.cancel()
+    }
+
+    fn cancelled_error() -> PluginError {
+        PluginError {
+            code: -32800,
+            message: "query cancelled".to_string(),
+        }
+    }
+
+    fn with_auth(&self, request: RequestBuilder) -> RequestBuilder {
+        match self
+            .params
+            .password
+            .as_deref()
+            .filter(|password| !password.is_empty())
+        {
+            Some(password) => request.basic_auth(&self.username, Some(password)),
+            None => request,
+        }
+    }
+
+    fn send_with_retries<F>(&self, mut send: F) -> Result<Response, reqwest::Error>
+    where
+        F: FnMut() -> Result<Response, reqwest::Error>,
+    {
+        for attempt in 0..=MAX_TRANSIENT_RETRIES {
+            let response = send()?;
+            let status = response.status();
+            let transient = matches!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS
+                    | StatusCode::BAD_GATEWAY
+                    | StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::GATEWAY_TIMEOUT
+            );
+            if !transient || attempt == MAX_TRANSIENT_RETRIES {
+                return Ok(response);
+            }
+
+            let retry_after = response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or_else(|| Duration::from_millis(100));
+            drop(response);
+            thread::sleep(retry_after.min(Duration::from_secs(2)));
+        }
+
+        unreachable!("retry loop returns on its final attempt")
+    }
+
+    fn read_response(&self, response: Response) -> Result<Value, PluginError> {
+        let status = response.status();
+        if !status.is_success() {
+            let message = response
+                .text()
+                .unwrap_or_else(|_| "response body unavailable".to_string());
+            return Err(PluginError::internal(format!(
+                "Trino returned HTTP {status}: {}",
+                message.trim()
+            )));
+        }
+
+        let page: Value = response
+            .json()
+            .map_err(|err| PluginError::internal(format!("Trino returned invalid JSON: {err}")))?;
+        if let Some(error) = page.get("error") {
+            let name = error
+                .get("errorName")
+                .and_then(Value::as_str)
+                .unwrap_or("query failed");
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Trino returned an unspecified query error");
+            return Err(PluginError::internal(format!("Trino {name}: {message}")));
+        }
+        Ok(page)
+    }
+
+    fn collect_page(&self, page: &Value, result: &mut QueryResult) -> Result<(), PluginError> {
+        if result.columns.is_empty() {
+            if let Some(columns) = page.get("columns").and_then(Value::as_array) {
+                for column in columns {
+                    if let Some(name) = column.get("name").and_then(Value::as_str) {
+                        result.columns.push(name.to_string());
+                        result.column_types.push(
+                            column
+                                .get("type")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(rows) = page.get("data").and_then(Value::as_array) {
+            result.rows.extend(rows.iter().cloned());
+        }
+
+        if result.update_count.is_none() {
+            result.update_count = page
+                .get("updateCount")
+                .and_then(|count| count.as_u64().or_else(|| count.as_str()?.parse().ok()));
+        }
+        Ok(())
+    }
+
+    fn validate_next_uri(&self, next_uri: &str) -> Result<reqwest::Url, PluginError> {
+        let url = reqwest::Url::parse(next_uri)
+            .or_else(|_| self.endpoint.join(next_uri))
+            .map_err(|err| {
+                PluginError::internal(format!("Trino returned an invalid nextUri: {err}"))
+            })?;
+
+        if url.origin() != self.endpoint.origin() {
+            return Err(PluginError::internal(
+                "Trino returned a nextUri on a different origin; refusing to forward connection credentials",
+            ));
+        }
+        Ok(url)
+    }
+}
+
+fn preserve_exact_values(result: &mut QueryResult) {
+    for row in &mut result.rows {
+        let Some(values) = row.as_array_mut() else {
+            continue;
+        };
+        for (index, value) in values.iter_mut().enumerate() {
+            if let Some(Some(column_type)) = result.column_types.get(index) {
+                preserve_value(value, column_type);
+            } else {
+                preserve_unsafe_integers(value);
+            }
+        }
+    }
+}
+
+fn preserve_value(value: &mut Value, type_name: &str) {
+    let normalized = type_name.trim().to_ascii_lowercase();
+    if normalized.starts_with("decimal(") {
+        if let Value::Number(number) = value {
+            *value = Value::String(number.to_string());
+        }
+        return;
+    }
+
+    if let Some(arguments) = type_arguments(&normalized, "array") {
+        if let (Some(element_type), Some(values)) = (arguments.first(), value.as_array_mut()) {
+            for element in values {
+                preserve_value(element, element_type);
+            }
+            return;
+        }
+    }
+
+    if let Some(arguments) = type_arguments(&normalized, "map") {
+        if arguments.len() == 2 {
+            match value {
+                Value::Object(entries) => {
+                    for item in entries.values_mut() {
+                        preserve_value(item, arguments[1]);
+                    }
+                    return;
+                }
+                Value::Array(entries) => {
+                    for entry in entries {
+                        if let Some(pair) = entry.as_array_mut() {
+                            if pair.len() == 2 {
+                                preserve_value(&mut pair[0], arguments[0]);
+                                preserve_value(&mut pair[1], arguments[1]);
+                            }
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(fields) = type_arguments(&normalized, "row") {
+        if let Some(values) = value.as_array_mut() {
+            for (item, field) in values.iter_mut().zip(fields) {
+                preserve_value(item, row_field_type(field));
+            }
+            return;
+        }
+        if let Value::Object(values) = value {
+            for (name, field_type) in fields
+                .iter()
+                .map(|field| (row_field_name(field), row_field_type(field)))
+            {
+                if let Some(item) = name.and_then(|name| values.get_mut(name)) {
+                    preserve_value(item, field_type);
+                }
+            }
+            return;
+        }
+    }
+
+    if normalized == "bigint" || normalized == "ubigint" {
+        preserve_unsafe_integer(value);
+    } else {
+        preserve_unsafe_integers(value);
+    }
+}
+
+fn type_arguments<'a>(type_name: &'a str, base: &str) -> Option<Vec<&'a str>> {
+    let rest = type_name.strip_prefix(base)?.trim_start();
+    let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
+    let mut arguments = Vec::new();
+    let mut depth = 0usize;
+    let mut in_quotes = false;
+    let mut start = 0usize;
+    for (position, character) in inner.char_indices() {
+        match character {
+            '"' => in_quotes = !in_quotes,
+            '(' if !in_quotes => depth += 1,
+            ')' if !in_quotes => depth = depth.saturating_sub(1),
+            ',' if !in_quotes && depth == 0 => {
+                arguments.push(inner[start..position].trim());
+                start = position + 1;
+            }
+            _ => {}
+        }
+    }
+    arguments.push(inner[start..].trim());
+    Some(arguments)
+}
+
+fn row_field_name(field: &str) -> Option<&str> {
+    let field = field.trim_start();
+    if let Some(quoted) = field.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        return Some(&quoted[..end]);
+    }
+    let end = field.find(char::is_whitespace)?;
+    Some(&field[..end])
+}
+
+fn row_field_type(field: &str) -> &str {
+    let field = field.trim_start();
+    if let Some(quoted) = field.strip_prefix('"') {
+        if let Some(end) = quoted.find('"') {
+            return quoted[end + 1..].trim_start();
+        }
+    }
+    if let Some(end) = field.find(char::is_whitespace) {
+        return field[end..].trim_start();
+    }
+    field
+}
+
+fn preserve_unsafe_integers(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for item in values {
+                preserve_unsafe_integers(item);
+            }
+        }
+        Value::Object(values) => {
+            for item in values.values_mut() {
+                preserve_unsafe_integers(item);
+            }
+        }
+        _ => preserve_unsafe_integer(value),
+    }
+}
+
+fn preserve_unsafe_integer(value: &mut Value) {
+    const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+    let Value::Number(number) = value else {
+        return;
+    };
+    let unsafe_integer = number
+        .as_i64()
+        .is_some_and(|integer| !(-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&integer))
+        || number
+            .as_u64()
+            .is_some_and(|integer| integer > MAX_SAFE_INTEGER as u64);
+    if unsafe_integer {
+        *value = Value::String(number.to_string());
     }
 }
