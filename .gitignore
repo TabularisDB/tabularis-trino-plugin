@@ -1,0 +1,12 @@
+node_modules
+dist/
+target/
+debug/
+
+.idea/
+.vscode/
+.zed/
+
+*.swp
+*.swo
+.DS_Store
