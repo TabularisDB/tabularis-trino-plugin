@@ -142,10 +142,14 @@ impl Client {
             .to_ascii_lowercase();
         let secure = match ssl_mode.as_str() {
             "" | "disable" | "disabled" => false,
-            "prefer" | "require" | "verify-ca" | "verify-full" => true,
+            // Tabularis serializes the SSL-tab choices with underscores, while
+            // connection strings and other clients commonly use hyphens.
+            "prefer" | "preferred" | "require" | "required" | "verify-ca"
+            | "verify_ca" | "verify-full" | "verify_full" | "verify-identity"
+            | "verify_identity" => true,
             other => {
                 return Err(PluginError::invalid_params(format!(
-                "unsupported ssl_mode '{other}'; use disable, require, verify-ca, or verify-full"
+                "unsupported ssl_mode '{other}'; use disable, prefer, require, verify_ca, or verify_identity"
             )))
             }
         };
@@ -329,7 +333,7 @@ impl Client {
                 request.send()
             })
             .map_err(|err| {
-                PluginError::internal(format!("could not submit query to Trino: {err}"))
+                PluginError::internal(format!("could not submit query to Trino: {err:?}"))
             })?;
 
         let mut page = self.read_response(response)?;

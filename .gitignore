@@ -10,3 +10,5 @@ debug/
 *.swp
 *.swo
 .DS_Store
+fixture/https/certs/
+fixture/https/password.db

@@ -195,36 +195,70 @@ docker compose -f fixture/docker-compose.yml down
 
 ## 10. Verify HTTPS and Basic authentication before release
 
-The local fixture uses unauthenticated HTTP and cannot verify this path. Use a
-separate Trino coordinator configured for HTTPS and HTTP Basic authentication.
-Do not use production credentials in screenshots, logs, or the verification
-record.
+The repository includes a Trino 483 fixture configured for HTTPS and HTTP
+Basic authentication. Its local CA and server certificate must be generated
+before startup. Do not use production credentials in screenshots, logs, or the
+verification record.
 
-1. In Tabularis, create a new Trino connection to the secured coordinator.
-   Enter its HTTPS URL (or host with SSL enabled), the correct port, a valid
-   username, and password. Configure the CA certificate when the server uses
-   a private or self-signed CA. Leave client certificate and key blank unless
-   the server also requires mutual TLS.
-2. Click **Test Connection**. Expected: it succeeds.
-3. Save the connection and run `SELECT 1` from the SQL editor. Expected: one
-   row with value `1`.
-4. Edit the connection and enter an incorrect password. Test the connection
-   again. Expected: it fails and reports an actionable authentication error,
-   without exposing the password.
-5. If the server uses a private CA, repeat with the CA configured as a PEM file
-   path. Expected: TLS verification and the query succeed. If supported by the
-   available test server, also verify rejection when the CA is missing or
-   incorrect.
-6. If the server requires mutual TLS, configure both client certificate and
-   private key, then verify connection success. Confirm that providing only
-   one of the pair is rejected with a useful configuration error.
-7. As a security check, configure a password while using plain HTTP. Expected:
+1. Stop the regular HTTP fixture if it is running because both fixtures use
+   host port `5432`:
+
+   ```sh
+   docker compose -f fixture/docker-compose.yml down
+   ```
+
+2. Generate a local CA and a separate `localhost` server certificate:
+
+   ```sh
+   ./fixture/https/generate-certs.sh
+   ```
+
+3. Create a test password with a bcrypt cost accepted by Trino. `htpasswd`'s
+   default cost is too low, so specify cost 10:
+
+   ```sh
+   htpasswd -B -C 10 -c fixture/https/password.db tester
+   ```
+
+   Enter a throwaway password when prompted. Use the same password in the
+   Tabularis connection form.
+
+4. Start the HTTPS fixture and check its logs:
+
+   ```sh
+   docker compose -f fixture/https/docker-compose.yaml up -d
+   docker compose -f fixture/https/docker-compose.yaml ps
+   docker logs trino-https --tail 80
+   ```
+
+5. In Tabularis, create a Trino connection with these values:
+
+   | Field | Value |
+   |---|---|
+   | Host | `localhost` |
+   | Port | `5432` |
+   | Username | `tester` |
+   | Password | The throwaway password entered in step 3 |
+   | Database name | `memory` |
+   | SSL Mode | **Verify Identity** |
+   | CA certificate | `fixture/https/certs/ca.crt` (use its absolute path if the form requires a path) |
+   | Client certificate and key | Leave both empty |
+
+   Leave the connection string blank. `localhost` matches the server
+   certificate's subject alternative name.
+
+6. Click **Test Connection**. Expected: it succeeds. Save the connection and
+   run `SELECT 1` in the SQL editor. Expected: one row with value `1`.
+7. Edit the connection, enter an incorrect password, and test again. Expected:
+   it fails with an actionable authentication error and does not expose the
+   password.
+8. As a security check, configure a password while using plain HTTP. Expected:
    the plugin rejects the configuration before sending credentials.
 
 **Status: ☐ Pending live verification.** Record only non-secret details below:
 
 - Tabularis version:
-- Trino version:
+- Trino version: `trinodb/trino:483`
 - OS:
 - Authentication checks passed:
 - Failure/error behavior:
