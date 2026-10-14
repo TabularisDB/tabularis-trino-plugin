@@ -38,8 +38,12 @@ Deferred until their methods are implemented and tested:
 - Catalogs and schemas are discovered from Trino and remain limited by the
   connected user's permissions.
 
-Before release, verify the authentication choice against the deployed Trino
-configuration and document any TLS certificate requirements.
+Authentication and TLS behavior were manually checked in Tabularis for v0.1.3:
+HTTPS Basic authentication succeeds, invalid credentials produce an error, and
+password authentication over plain HTTP is rejected. See
+[`MANUAL_TEST_PLAN.md`](MANUAL_TEST_PLAN.md). The user reported completing all
+documented manual checks on 2026-10-14; Tabularis version and OS were not
+recorded.
 
 ## Implementation progress
 
@@ -49,8 +53,8 @@ configuration and document any TLS certificate requirements.
 | 2 | Trino REST client, paging, errors, and cancellation | Implemented with protocol tests. |
 | 3 | Connection check and metadata discovery | Implemented with protocol tests. |
 | 4 | Query paging and exact typed-value conversion | Implemented with conversion tests. |
-| 5 | Protocol tests, seeded multi-catalog fixture, manual test plan | Implemented; all documented manual checks reported passed on 2026-10-14. |
-| 6 | Setup/release docs and Rust quality gates | Current registry submission flow and supported release targets are documented. GitHub release assets and registry submission remain to be created after release validation. |
+| 5 | Protocol tests, seeded multi-catalog fixture, manual test plan | Implemented; all documented manual checks reported passed on 2026-10-14, including HTTPS Basic authentication and plain HTTP password rejection. |
+| 6 | Setup/release docs and Rust quality gates | Setup and release instructions are documented. Verify GitHub release assets and registry publication on their respective external pages; their status is not tracked in this repository. |
 
 ## Original implementation order
 
@@ -86,5 +90,5 @@ version and OS details were not recorded.
 
 Implementation repository: https://github.com/TabularisDB/tabularis-trino-plugin
 
-Post this repository link on the Trino proposal/bounty before implementation
-work begins so contributors can coordinate.
+Keep the Trino proposal/bounty linked to this repository so contributors can
+coordinate: https://github.com/TabularisDB/tabularis-trino-plugin

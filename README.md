@@ -122,8 +122,8 @@ For the automated checks that do not require the Tabularis UI, run:
 The script requires Docker Compose, `curl`, Python 3, and Rust. It starts and
 seeds the fixture, builds the plugin, checks its JSON-RPC metadata/query paths,
 and exercises cancellation. It leaves the fixture running for manual app
-checks. Sidebar, editor/notebook behavior, screenshots, and live HTTPS/Basic
-authentication still need the manual steps below.
+checks. The manual plan records sidebar, editor/notebook, and HTTPS/Basic
+checks as passed. Registry screenshots are still needed for publication.
 
 Stop the fixture when finished:
 
@@ -133,14 +133,14 @@ docker compose -f fixture/docker-compose.yml down
 
 ## Release and registry publication
 
-Before tagging a release, complete the manual checks in
-[`MANUAL_TEST_PLAN.md`](MANUAL_TEST_PLAN.md), including its live HTTPS/Basic
-authentication check. Run the Rust verification commands above and confirm
-the release version matches both `.tabularium` and `Cargo.toml`.
+For v0.1.3, the manual checks in [`MANUAL_TEST_PLAN.md`](MANUAL_TEST_PLAN.md)
+are recorded as passed. Before a future release, rerun the checks affected by
+the changes and run the Rust verification commands above. Confirm the release
+version matches both `.tabularium` and `Cargo.toml`.
 
-1. Set the `.tabularium` and `Cargo.toml` versions to the release version
-   (currently `0.1.0`) and commit that change if you are releasing a later
-   version. For the current first release, the matching version tag is `v0.1.0`.
+1. Set the `.tabularium` and `Cargo.toml` versions to the next release version
+   (the current release is `0.1.3`) and commit that change. Create a matching
+   `v`-prefixed tag, such as `v0.1.4` for the next patch release.
 2. Push the tag. The GitHub Actions workflow builds Linux x64/arm64, macOS
    x64/arm64, and Windows x64 ZIP bundles and attaches them to the release,
    together with `.tabularium` as a standalone asset.

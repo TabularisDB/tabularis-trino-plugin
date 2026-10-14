@@ -193,7 +193,7 @@ Expected: a JSON-RPC success response with rows `n = 11` through `n = 15`,
 docker compose -f fixture/docker-compose.yml down
 ```
 
-## 10. Verify HTTPS and Basic authentication before release
+## 10. HTTPS and Basic authentication verification
 
 The repository includes a Trino 483 fixture configured for HTTPS and HTTP
 Basic authentication. Its local CA and server certificate must be generated
@@ -255,20 +255,22 @@ verification record.
 8. As a security check, configure a password while using plain HTTP. Expected:
    the plugin rejects the configuration before sending credentials.
 
-**Status: ☐ Pending live verification.** Record only non-secret details below:
+**Status: ☑ Passed (user-confirmed on 2026-10-14).** The user confirmed the
+HTTPS Basic connection/query check, invalid-password handling, and rejection of
+password authentication over plain HTTP in Tabularis. The Tabularis version and
+OS were not recorded.
 
 - Tabularis version:
 - Trino version: `trinodb/trino:483`
 - OS:
-- Authentication checks passed:
-- Failure/error behavior:
-- Tester/date:
+- Authentication checks passed: HTTPS Basic; plain HTTP password rejection.
+- Failure/error behavior: Invalid password rejected; plain HTTP password rejected.
+- Tester/date: User-confirmed, 2026-10-14.
 
 ## Record the result
 
 For each check, record pass/fail and include the Tabularis version, OS, Trino
 image tag (or server version), and any non-secret error text. This is a manual
 procedure; passing the mock protocol tests does not replace running these
-checks against the app and live fixture. The live HTTPS/Basic authentication
-check in step 10 must pass before publishing a release that advertises that
-authentication mode.
+checks against the app and live fixture. Step 10's live HTTPS/Basic
+authentication check is user-confirmed as passed for v0.1.3.
