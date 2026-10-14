@@ -192,22 +192,48 @@ Expected: a JSON-RPC success response with rows `n = 11` through `n = 15`,
 docker compose -f fixture/docker-compose.yml down
 ```
 
-## 10. Optional HTTPS and authentication check before release
+## 10. Verify HTTPS and Basic authentication before release
 
-The local fixture uses unauthenticated HTTP, so it does not verify the secure
-authentication path. Against a Trino coordinator configured for HTTPS and
-Basic authentication, create a separate connection with HTTPS enabled,
-username, password, and (if needed) a CA certificate configured. Test the
-connection, run `SELECT 1`, and confirm that a wrong password produces a useful
-authentication error. The plugin rejects passwords over plain HTTP. If the
-server requires mutual TLS, configure both the client certificate and private
-key.
+The local fixture uses unauthenticated HTTP and cannot verify this path. Use a
+separate Trino coordinator configured for HTTPS and HTTP Basic authentication.
+Do not use production credentials in screenshots, logs, or the verification
+record.
 
-**Status: ☐ Pending a live HTTPS/Basic authentication check.**
+1. In Tabularis, create a new Trino connection to the secured coordinator.
+   Enter its HTTPS URL (or host with SSL enabled), the correct port, a valid
+   username, and password. Configure the CA certificate when the server uses
+   a private or self-signed CA. Leave client certificate and key blank unless
+   the server also requires mutual TLS.
+2. Click **Test Connection**. Expected: it succeeds.
+3. Save the connection and run `SELECT 1` from the SQL editor. Expected: one
+   row with value `1`.
+4. Edit the connection and enter an incorrect password. Test the connection
+   again. Expected: it fails and reports an actionable authentication error,
+   without exposing the password.
+5. If the server uses a private CA, repeat with the CA configured as a PEM file
+   path. Expected: TLS verification and the query succeed. If supported by the
+   available test server, also verify rejection when the CA is missing or
+   incorrect.
+6. If the server requires mutual TLS, configure both client certificate and
+   private key, then verify connection success. Confirm that providing only
+   one of the pair is rejected with a useful configuration error.
+7. As a security check, configure a password while using plain HTTP. Expected:
+   the plugin rejects the configuration before sending credentials.
+
+**Status: ☐ Pending live verification.** Record only non-secret details below:
+
+- Tabularis version:
+- Trino version:
+- OS:
+- Authentication checks passed:
+- Failure/error behavior:
+- Tester/date:
 
 ## Record the result
 
 For each check, record pass/fail and include the Tabularis version, OS, Trino
-image tag, and any error text. This is a manual procedure; passing the mock
-protocol tests does not replace running these checks against the app and live
-fixture.
+image tag (or server version), and any non-secret error text. This is a manual
+procedure; passing the mock protocol tests does not replace running these
+checks against the app and live fixture. The live HTTPS/Basic authentication
+check in step 10 must pass before publishing a release that advertises that
+authentication mode.
