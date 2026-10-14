@@ -64,24 +64,13 @@ EXPLAIN are not supported. Presto compatibility has not been evaluated.
 
 ## Screenshots
 
-<table>
-  <tr>
-    <td align="center"><strong>Trino in the database picker</strong></td>
-    <td align="center"><strong>Connection configuration</strong></td>
-  </tr>
-  <tr>
-    <td><img src="assets/01-database-picker.png" alt="Trino listed and installed in the Tabularis database picker" width="480" /></td>
-    <td><img src="assets/02-connection-form.png" alt="Trino connection form showing the local fixture settings" width="480" /></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Catalog and schema browser</strong></td>
-    <td align="center"><strong>Paginated query results</strong></td>
-  </tr>
-  <tr>
-    <td><img src="assets/03-schema-browser.png" alt="Tabularis explorer showing Trino catalogs, schemas, tables, and views" width="480" /></td>
-    <td><img src="assets/04-table-data.png" alt="Ordered Trino query results with 100,000 rows and pagination controls" width="480" /></td>
-  </tr>
-</table>
+![Trino listed and installed in the Tabularis database picker](https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/01-database-picker.png)
+
+![Trino connection form showing the local fixture settings](https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/02-connection-form.png)
+
+![Tabularis explorer showing Trino catalogs, schemas, tables, and views](https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/03-schema-browser.png)
+
+![Ordered Trino query results with 100,000 rows and pagination controls](https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/04-table-data.png)
 
 The connection screenshot uses a local test account; the password is masked.
 
