@@ -1,157 +1,227 @@
-# Trino plugin for Tabularis
+<div align="center">
+  <img src="https://raw.githubusercontent.com/TabularisDB/tabularis/main/public/logo-sm.png" width="112" height="112" alt="Tabularis logo" />
+  &nbsp;&nbsp;<strong style="font-size: 2rem">+</strong>&nbsp;&nbsp;
+  <img src="https://raw.githubusercontent.com/trinodb/docs.trino.io/653a46f6bdc64b5f67302dc9ab8a0c432ca25e70/352/_static/trino.svg" width="112" height="112" alt="Trino logo" />
+</div>
 
-A standalone Rust driver plugin that connects [Tabularis](https://github.com/TabularisDB/tabularis)
-to [Trino](https://trino.io/). The plugin communicates with Tabularis using
-JSON-RPC 2.0 over standard input and output.
+# tabularis-trino-plugin
 
-> Query cancellation requires Tabularis `0.26.0` or newer. The plugin uses the
-> host's `cancel` notification to stop running statements on Trino.
+<p align="center">
+
+[![Release](https://img.shields.io/github/v/release/TabularisDB/tabularis-trino-plugin?style=flat)](https://github.com/TabularisDB/tabularis-trino-plugin/releases)
+![Downloads](https://img.shields.io/github/downloads/TabularisDB/tabularis-trino-plugin/total.svg?style=flat)
+[![Release workflow](https://github.com/TabularisDB/tabularis-trino-plugin/actions/workflows/release.yml/badge.svg)](https://github.com/TabularisDB/tabularis-trino-plugin/actions/workflows/release.yml)
+
+</p>
+
+A [Trino](https://trino.io/) driver plugin for [Tabularis](https://github.com/TabularisDB/tabularis),
+the open-source database client.
+
+This plugin connects Tabularis to Trino through a standalone Rust executable
+that implements JSON-RPC 2.0 over stdio. Browse catalogs, schemas, tables, and
+views, then run SQL in the editor or SQL notebooks—including federated queries
+across catalogs.
+
+> **Requires Tabularis v0.26.0 or later** for query cancellation support.
+
+## Table of Contents
+
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Connection Configuration](#connection-configuration)
+- [Installation](#installation)
+  - [From the Tabularium registry](#from-the-tabularium-registry)
+  - [Manual Installation](#manual-installation)
+- [How It Works](#how-it-works)
+- [Supported Operations](#supported-operations)
+- [Building from Source](#building-from-source)
+- [Development and Testing](#development-and-testing)
+- [License](#license)
 
 ## Features
 
-- Browse Trino catalogs, schemas, tables, columns, and views visible to the
-  connected user.
-- Run SQL from the Tabularis editor and notebooks, including federated queries
-  across catalogs.
-- Collect every Trino response page and support Tabularis result paging and
-  offsets.
-- Cancel timed out queries through Trino's client protocol.
-- Preserve decimal and unsafe large-integer precision, including values nested
-  in ARRAY, MAP, and ROW values.
-- Connect without authentication for local development, or use HTTP Basic
-  authentication over HTTPS. Passwords over plain HTTP are rejected.
-- Configure TLS verification, a custom CA certificate, and an optional client
-  certificate/private key pair.
+- **Catalog and schema browsing** — Discover catalogs, schemas, tables,
+  columns, views, view definitions, and view columns visible to the Trino user.
+- **Query execution** — Run SQL in the Tabularis editor and notebooks, including
+  federated queries across configured catalogs.
+- **Complete results** — Follow Trino's result-page links and preserve row
+  order, including when a response page contains no rows. Support requested
+  result limits and offsets.
+- **Cancellation** — Send cancellation to Trino through its client protocol
+  when Tabularis cancels a running query.
+- **Exact values** — Preserve NULL, DECIMAL, large integers, ARRAY, MAP, and ROW
+  values without silent precision loss.
+- **Secure authentication** — Support unauthenticated local development and
+  HTTP Basic authentication over HTTPS. Password authentication over plain HTTP
+  is rejected.
+- **TLS configuration** — Support SSL modes, a custom CA certificate, and an
+  optional client certificate/private key pair.
+- **Cross-platform releases** — The release workflow builds for Linux x64/arm64,
+  macOS x64/arm64, and Windows x64.
 
-## Supported capabilities
+This initial release is read-only. Grid editing, CRUD, DDL actions, and Visual
+EXPLAIN are not supported. Presto compatibility has not been evaluated.
 
-| Capability | Support |
-|---|---|
-| Connection test | `SELECT 1` against the coordinator |
-| Metadata | Catalogs, schemas, tables, columns, views, view definitions and view columns |
-| Query execution | Trino REST protocol with full response paging and cancellation |
-| Editing and CRUD | Read-only; not supported |
-| DDL actions | Not supported |
-| Visual EXPLAIN | Not enabled |
-| Presto | Not evaluated; this plugin targets Trino |
+## Screenshots
 
-Indexes, foreign keys, and routines are not exposed in this release. Unsupported
-write and DDL methods return the documented unsupported-method response.
+<table>
+  <tr>
+    <td align="center"><strong>Trino in the database picker</strong></td>
+    <td align="center"><strong>Connection configuration</strong></td>
+  </tr>
+  <tr>
+    <td><img src="assets/01-database-picker.png" alt="Trino listed and installed in the Tabularis database picker" width="480" /></td>
+    <td><img src="assets/02-connection-form.png" alt="Trino connection form showing the local fixture settings" width="480" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Catalog and schema browser</strong></td>
+    <td align="center"><strong>Paginated query results</strong></td>
+  </tr>
+  <tr>
+    <td><img src="assets/03-schema-browser.png" alt="Tabularis explorer showing Trino catalogs, schemas, tables, and views" width="480" /></td>
+    <td><img src="assets/04-table-data.png" alt="Ordered Trino query results with 100,000 rows and pagination controls" width="480" /></td>
+  </tr>
+</table>
 
-## Connection configuration
+The connection screenshot uses a local test account; the password is masked.
 
-| Field | Description |
-|---|---|
-| Host | Trino coordinator hostname or URL. Use `https://` for HTTPS. |
-| Port | Coordinator port. The manifest defaults to `5432` for the local fixture; Trino commonly uses `8080`, which can be entered here. |
-| Database name | Default Trino catalog. Enable multiple database browsing in Tabularis to browse more catalogs. |
-| Schema | Optional schema selected in Tabularis for browsing and query context. |
+## Connection Configuration
+
+| Tabularis field | Description |
+| --- | --- |
+| Host | Trino coordinator hostname or URL. Use an `https://` URL for HTTPS. |
+| Port | Coordinator port. The local fixture maps host port `5432` to Trino's container port `8080`; standard Trino deployments commonly use `8080`. |
+| Database name | Default Trino catalog. Enable multiple database browsing to browse additional catalogs. |
+| Schema | Optional default schema for browsing and query context. |
 | Username | Trino user; defaults to `tabularis` when blank. |
-| Password | Optional; accepted only over HTTPS. |
-| SSL mode | `disable`, `prefer`, `require`, `verify-ca`, or `verify-full`. |
-| CA certificate | Optional PEM content or path to a PEM file. |
-| Client certificate/key | Optional PEM content or file paths; provide both when mutual TLS is required. |
+| Password | Optional; password authentication requires HTTPS. |
+| SSL mode | Disabled, Preferred, Required, Verify CA, or Verify Identity. |
+| CA certificate | Optional PEM content or a path to a PEM file. |
+| Client certificate/key | Optional PEM content or file paths. Provide both when mutual TLS is required. |
 
-The connection-string field is hidden because this plugin accepts coordinator
-and catalog settings through the standard connection fields.
+The connection-string field is not used. Configure the coordinator and catalog
+through the standard connection fields.
 
-## Install for development
+## Installation
 
-Install Rust and [`just`](https://just.systems/), then run from this repository:
+### From the Tabularium registry
 
-```sh
-just dev-install
-```
+Registry publication is not complete yet. After publication, install the plugin
+from Tabularis using **Settings → Plugins**, then search for **Trino**.
 
-This builds the plugin and copies its executable and `.tabularium` manifest to
-the current user's Tabularis plugin directory. Restart Tabularis or toggle the
-plugin off and on to reload it.
+### Manual Installation
 
-| OS | Plugin directory |
-|---|---|
-| Linux | `~/.local/share/tabularis/plugins/drivers/trino/` |
-| macOS | `~/Library/Application Support/tabularis/plugins/drivers/trino/` |
-| Windows | `%APPDATA%\tabularis\plugins\drivers\trino\` |
+1. Download the archive for your operating system and architecture from the
+   [GitHub Releases page](https://github.com/TabularisDB/tabularis-trino-plugin/releases).
+2. Extract the archive. It contains the plugin executable and `.tabularium`
+   manifest.
+3. Copy both files into the Trino plugin directory:
 
-Registry distribution is not published yet. Release instructions are below.
+   | OS | Plugin directory |
+   | --- | --- |
+   | **Linux** | `~/.local/share/tabularis/plugins/drivers/trino/` |
+   | **macOS** | `~/Library/Application Support/tabularis/plugins/drivers/trino/` |
+   | **Windows** | `%APPDATA%\tabularis\plugins\drivers\trino\` |
 
-## Build and verify
+4. Restart Tabularis or toggle the Trino plugin off and on in Settings.
+
+For a local development build, use `just dev-install` from this repository.
+
+## How It Works
+
+The plugin is a standalone Rust executable that communicates with Tabularis
+using **JSON-RPC 2.0 over stdio**:
+
+1. Tabularis starts the plugin as a child process.
+2. Tabularis sends newline-delimited JSON-RPC requests through the plugin's
+   standard input; the plugin writes responses to standard output.
+3. The plugin submits SQL to Trino's `/v1/statement` endpoint, follows each
+   `nextUri` until the statement finishes, and sends an HTTP `DELETE` to cancel
+   a running statement when requested.
+
+Catalog and schema context comes from each connection/request. Catalogs map to
+Tabularis databases, and Trino metadata visibility follows the connected
+Trino user's permissions.
+
+## Supported Operations
+
+| Operation | Support |
+| --- | --- |
+| Connection test | Supported (`SELECT 1`) |
+| Catalog discovery | Supported (`get_databases`) |
+| Schema discovery | Supported (`get_schemas`) |
+| Table and column discovery | Supported (`get_tables`, `get_columns`) |
+| View discovery | Supported, including definitions and columns |
+| SQL execution | Supported with full response paging and cancellation |
+| Grid editing and CRUD | Not supported; plugin is read-only |
+| DDL actions | Not supported |
+| Visual EXPLAIN | Not supported |
+| Presto | Not evaluated |
+
+Indexes, foreign keys, and routines are not exposed by this release. Unsupported
+methods return the plugin protocol's not-implemented response.
+
+## Building from Source
+
+### Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install)
+- [`just`](https://just.systems/) (optional; runs the common Cargo recipes)
+- Docker Compose for the local Trino fixture
+
+### Build and install locally
 
 ```sh
 just build
-just test
-just lint
-cargo fmt --check
+just dev-install
 ```
 
-Build an optimized executable with:
+Or build a release executable directly:
 
 ```sh
 cargo build --release
 ```
 
-The binary is written to `target/release/trino-plugin` (Windows:
-`target/release/trino-plugin.exe`).
+The binary is written to `target/release/trino-plugin` (`trino-plugin.exe` on
+Windows).
 
-## Local Trino fixture
+## Development and Testing
 
-The fixture runs Trino `483`, maps host port `5432` to container port `8080`,
-and configures the `memory` and `tpch` catalogs.
+Run the Rust checks:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Start and seed the local Trino 483 fixture, which exposes the `memory` and
+`tpch` catalogs:
 
 ```sh
 docker compose -f fixture/docker-compose.yml up -d
 docker exec trino-fixture trino --execute "SELECT 1"
 ./fixture/seed.sh
-just dev-install
 ```
 
-Connect to `127.0.0.1:5432` with catalog `memory`, username `tester`, and no
-password. Enable multiple database browsing to discover the `tpch` catalog.
-The memory catalog is cleared when the container is recreated; run the seed
-script again after a restart.
+The fixture maps host port `5432` to container port `8080`. Connect in
+Tabularis to `127.0.0.1:5432` with catalog `memory`, username `tester`, and no
+password. The in-memory catalog is cleared when the container is recreated;
+rerun the seed script after a restart.
 
-Follow [MANUAL_TEST_PLAN.md](MANUAL_TEST_PLAN.md) for metadata, query paging,
-federated query, exact-value, cancellation, and HTTPS checks.
-
-For the automated checks that do not require the Tabularis UI, run:
+Run the JSON-RPC fixture checks with:
 
 ```sh
 ./scripts/e2e-fixture-test.sh
 ```
 
-The script requires Docker Compose, `curl`, Python 3, and Rust. It starts and
-seeds the fixture, builds the plugin, checks its JSON-RPC metadata/query paths,
-and exercises cancellation. It leaves the fixture running for manual app
-checks. The manual plan records sidebar, editor/notebook, and HTTPS/Basic
-checks as passed. Registry screenshots are still needed for publication.
-
-Stop the fixture when finished:
+See [MANUAL_TEST_PLAN.md](MANUAL_TEST_PLAN.md) for app checks, including
+metadata browsing, editor and notebook queries, pagination, cancellation, and
+HTTPS/Basic authentication. Stop the fixture when finished:
 
 ```sh
 docker compose -f fixture/docker-compose.yml down
 ```
-
-## Release and registry publication
-
-For v0.1.3, the manual checks in [`MANUAL_TEST_PLAN.md`](MANUAL_TEST_PLAN.md)
-are recorded as passed. Before a future release, rerun the checks affected by
-the changes and run the Rust verification commands above. Confirm the release
-version matches both `.tabularium` and `Cargo.toml`.
-
-1. Set the `.tabularium` and `Cargo.toml` versions to the next release version
-   (the current release is `0.1.3`) and commit that change. Create a matching
-   `v`-prefixed tag, such as `v0.1.4` for the next patch release.
-2. Push the tag. The GitHub Actions workflow builds Linux x64/arm64, macOS
-   x64/arm64, and Windows x64 ZIP bundles and attaches them to the release,
-   together with `.tabularium` as a standalone asset.
-3. Confirm all five ZIP files and the standalone manifest appear on the GitHub
-   release. The tag without its `v` prefix must match the manifest and Cargo
-   versions. If a workflow build fails, fix it and release under a new version
-   tag rather than reusing the published tag.
-4. Submit the release at
-   [registry.tabularis.dev/submit](https://registry.tabularis.dev/submit),
-   setting the minimum Tabularis version to `0.26.0` or newer for query
-   cancellation support.
 
 ## License
 
