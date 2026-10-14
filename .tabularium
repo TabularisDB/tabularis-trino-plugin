@@ -2,8 +2,30 @@
   "$schema": "https://registry.tabularis.dev/manifest.schema.json?kind=driver",
   "id": "trino",
   "name": "Trino",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Tabularis driver plugin for Trino",
+  "screenshots": [
+    {
+      "url": "https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/01-database-picker.png",
+      "caption": "Trino in the Tabularis database picker",
+      "alt": "Trino listed and installed in the Tabularis database picker"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/02-connection-form.png",
+      "caption": "Trino connection configuration",
+      "alt": "Trino connection form showing the local fixture settings"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/03-schema-browser.png",
+      "caption": "Browse Trino catalogs and schemas",
+      "alt": "Tabularis explorer showing Trino catalogs, schemas, tables, and views"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/04-table-data.png",
+      "caption": "Paginated Trino query results",
+      "alt": "Ordered Trino query results with 100,000 rows and pagination controls"
+    }
+  ],
   "kind": "driver",
   "engine": "trino",
   "paradigms": ["relational"],
