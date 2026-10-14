@@ -1,0 +1,12 @@
+services:
+  trino-https:
+    image: trinodb/trino:483
+    container_name: trino-https
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../catalog:/etc/trino/catalog
+      - ./config.properties:/etc/trino/config.properties
+      - ./password-authenticator.properties:/etc/trino/password-authenticator.properties
+      - ./password.db:/etc/trino/password.db
+      - ./certs:/etc/trino/certs

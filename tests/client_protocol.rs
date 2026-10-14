@@ -358,6 +358,25 @@ fn rejects_password_authentication_over_plain_http() {
 }
 
 #[test]
+fn accepts_tabularis_ssl_tab_mode_values() {
+    for mode in ["prefer", "require", "verify_ca", "verify_identity"] {
+        let result = Client::connect(ConnectionParams {
+            driver: Some("trino".into()),
+            host: Some("localhost".into()),
+            port: Some(5432),
+            database: None,
+            username: Some("tester".into()),
+            password: None,
+            ssl_mode: Some(mode.into()),
+            ssl_ca: None,
+            ssl_cert: None,
+            ssl_key: None,
+        });
+        assert!(result.is_ok(), "SSL mode {mode} should be accepted");
+    }
+}
+
+#[test]
 fn reports_invalid_custom_ca_certificate_file() {
     let ca_path = std::env::temp_dir().join(format!("trino-invalid-ca-{}.pem", std::process::id()));
     std::fs::write(
