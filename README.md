@@ -120,13 +120,21 @@ docker compose -f fixture/docker-compose.yml down
 
 ## Release and registry publication
 
-1. Set the `.tabularium` version to the release version and tag the commit with
-   the same version prefixed by `v` (for example, `v0.1.0`).
+Before tagging a release, complete the manual checks in
+[`MANUAL_TEST_PLAN.md`](MANUAL_TEST_PLAN.md), including its live HTTPS/Basic
+authentication check. Run the Rust verification commands above and confirm
+the release version matches both `.tabularium` and `Cargo.toml`.
+
+1. Set the `.tabularium` and `Cargo.toml` versions to the release version
+   (currently `0.1.0`) and commit that change if you are releasing a later
+   version. For the current first release, the matching version tag is `v0.1.0`.
 2. Push the tag. The GitHub Actions workflow builds Linux x64/arm64, macOS
    x64/arm64, and Windows x64 ZIP bundles and attaches them to the release,
    together with `.tabularium` as a standalone asset.
 3. Confirm all five ZIP files and the standalone manifest appear on the GitHub
-   release. The tag without its `v` prefix must match the manifest version.
+   release. The tag without its `v` prefix must match the manifest and Cargo
+   versions. If a workflow build fails, fix it and release under a new version
+   tag rather than reusing the published tag.
 4. Submit the release at
    [registry.tabularis.dev/submit](https://registry.tabularis.dev/submit),
    setting the minimum Tabularis version to `0.26.0` or newer for query
