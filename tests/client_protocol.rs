@@ -274,6 +274,35 @@ fn reports_trino_query_errors() {
 }
 
 #[test]
+fn maps_trino_user_canceled_error_to_cancellation_response() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({"nextUri": "/v1/statement/q/1"}),
+        ),
+        MockResponse::json(
+            "GET",
+            "/v1/statement/q/1",
+            json!({
+                "error": {
+                    "errorName": "USER_CANCELED",
+                    "message": "Query was canceled"
+                }
+            }),
+        ),
+    ]);
+    let mut client = server.client();
+    let error = client
+        .run_query("SELECT 1")
+        .expect_err("cancelled query should return a cancellation error");
+
+    assert_eq!(error.code, -32800);
+    assert_eq!(error.message, "query cancelled");
+    server.finish();
+}
+
+#[test]
 fn refuses_cross_origin_next_uri() {
     let server = MockServer::start(vec![MockResponse::json(
         "POST",

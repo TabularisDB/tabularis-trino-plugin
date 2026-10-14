@@ -124,7 +124,8 @@ JOIN tpch.sf1.nation AS n ON m.n = n.nationkey
 ORDER BY m.n
 ```
 
-Expected: 25 rows, ordered by nation key; names should come from the TPCH
+Expected: 24 rows, ordered by nation key 1 through 24; TPCH nation key 0 has
+no match because `many_rows.n` starts at 1. Names should come from the TPCH
 catalog while `m.n` comes from the memory catalog.
 
 ## 6. Check connection errors

@@ -452,6 +452,9 @@ impl Client {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("Trino returned an unspecified query error");
+            if name == "USER_CANCELED" {
+                return Err(Self::cancelled_error());
+            }
             return Err(PluginError::internal(format!("Trino {name}: {message}")));
         }
         Ok(page)

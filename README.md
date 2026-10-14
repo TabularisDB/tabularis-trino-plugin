@@ -111,8 +111,21 @@ The memory catalog is cleared when the container is recreated; run the seed
 script again after a restart.
 
 Follow [MANUAL_TEST_PLAN.md](MANUAL_TEST_PLAN.md) for metadata, query paging,
-federated query, exact-value, cancellation, and HTTPS checks. Stop the fixture
-when finished:
+federated query, exact-value, cancellation, and HTTPS checks.
+
+For the automated checks that do not require the Tabularis UI, run:
+
+```sh
+./scripts/e2e-fixture-test.sh
+```
+
+The script requires Docker Compose, `curl`, Python 3, and Rust. It starts and
+seeds the fixture, builds the plugin, checks its JSON-RPC metadata/query paths,
+and exercises cancellation. It leaves the fixture running for manual app
+checks. Sidebar, editor/notebook behavior, screenshots, and live HTTPS/Basic
+authentication still need the manual steps below.
+
+Stop the fixture when finished:
 
 ```sh
 docker compose -f fixture/docker-compose.yml down
