@@ -28,9 +28,9 @@ Deferred until their methods are implemented and tested:
 ## Initial connection contract
 
 - Target Trino version: `483`, matching `fixture/docker-compose.yml`.
-- Coordinator: host and port. The manifest currently defaults to host port
-  `5432` to match the local fixture mapping (`5432:8080`); users connecting to
-  a standard Trino deployment should set its coordinator port, commonly `8080`.
+- Coordinator: host and port. The manifest defaults to port `8080`, the usual
+  Trino HTTP port. The local fixture maps host port `5432` to `8080`, so set
+  `5432` when connecting to it.
 - Context: catalog and optional schema are scoped to the connection/request.
 - Authentication: support username/password using HTTP Basic authentication
   over HTTPS. Permit unauthenticated HTTP for the local fixture only. Support
@@ -49,7 +49,7 @@ recorded.
 
 | Step | Work | Status |
 |---|---|---|
-| 1 | Manifest defaults and declared capabilities | Implemented; manifest hides unsupported connection-string input and enables SSL controls. Defaults to fixture host port `5432`; production port is configurable per coordinator. |
+| 1 | Manifest defaults and declared capabilities | Implemented; manifest hides unsupported connection-string input and enables SSL controls. Defaults to port `8080`; the local fixture uses host port `5432`, set per connection. |
 | 2 | Trino REST client, paging, errors, and cancellation | Implemented with protocol tests. |
 | 3 | Connection check and metadata discovery | Implemented with protocol tests. |
 | 4 | Query paging and exact typed-value conversion | Implemented with conversion tests. |

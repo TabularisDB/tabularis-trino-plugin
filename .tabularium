@@ -30,7 +30,7 @@
   "kind": "driver",
   "engine": "trino",
   "paradigms": ["relational"],
-  "default_port": 5432,
+  "default_port": 8080,
   "default_username": "",
   "executable": "trino-plugin",
   "capabilities": {
