@@ -63,7 +63,7 @@ across catalogs.
 - **Cross-platform releases** — The release workflow builds for Linux x64/arm64,
   macOS x64/arm64, and Windows x64.
 
-This initial release is read-only. Grid editing, CRUD, DDL actions, and Visual
+This plugin is read-only. Grid editing, CRUD, DDL actions, and Visual
 EXPLAIN are not supported. Presto compatibility has not been evaluated.
 
 ## Screenshots
@@ -83,7 +83,7 @@ The connection screenshot uses a local test account; the password is masked.
 | Tabularis field | Description |
 | --- | --- |
 | Host | Trino coordinator hostname or URL. Use an `https://` URL for HTTPS. |
-| Port | Coordinator port. The local fixture maps host port `5432` to Trino's container port `8080`; standard Trino deployments commonly use `8080`. |
+| Port | Coordinator port. Defaults to `8080`, the usual Trino HTTP port (HTTPS deployments often use `443` or `8443`). The local fixture maps host port `5432` to container port `8080`, so set `5432` when using it. |
 | Database name | Default Trino catalog. Enable multiple database browsing to browse additional catalogs. |
 | Schema | Optional default schema for browsing and query context. |
 | Username | Trino user; defaults to `tabularis` when blank. |
@@ -99,8 +99,9 @@ through the standard connection fields.
 
 ### From the Tabularium registry
 
-Registry publication is not complete yet. After publication, install the plugin
-from Tabularis using **Settings → Plugins**, then search for **Trino**.
+In Tabularis, open **Settings → Plugins**, search for **Trino**, and install it.
+The plugin is also listed on the
+[Tabularium registry](https://registry.tabularis.dev/plugins/trino).
 
 ### Manual Installation
 
