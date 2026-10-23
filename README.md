@@ -1,7 +1,15 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/TabularisDB/tabularis/main/packages/web-ui/public/logo-sm.png" width="112" height="112" alt="Tabularis logo" />
-  &nbsp;&nbsp;<strong style="font-size: 2rem">+</strong>&nbsp;&nbsp;
-  <img src="https://raw.githubusercontent.com/trinodb/docs.trino.io/653a46f6bdc64b5f67302dc9ab8a0c432ca25e70/352/_static/trino.svg" width="112" height="112" alt="Trino logo" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/TabularisDB/tabularis/main/.github/assets/banner-dark.png" />
+    <img src="https://raw.githubusercontent.com/TabularisDB/tabularis/main/.github/assets/banner-light.png" alt="tabularis — the database client your AI agent can actually use" width="600" />
+  </picture>
+
+  <br/>
+
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/trino-banner-dark.png" />
+    <img src="https://raw.githubusercontent.com/TabularisDB/tabularis-trino-plugin/main/assets/trino-banner-light.png" alt="Native Trino support" width="600" />
+  </picture>
 </div>
 
 # tabularis-trino-plugin
