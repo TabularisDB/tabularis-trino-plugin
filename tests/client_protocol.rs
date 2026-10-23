@@ -739,6 +739,97 @@ fn execute_query_collects_all_trino_pages_then_applies_requested_page() {
 }
 
 #[test]
+fn execute_query_returns_trino_query_diagnostics_across_pages() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({
+                "id": "20261023_123456_00001_abcd",
+                "stats": {"state": "QUEUED", "queued": true, "queuedTime": "3ms"},
+                "nextUri": "/v1/statement/q/1"
+            }),
+        ),
+        MockResponse::json(
+            "GET",
+            "/v1/statement/q/1",
+            json!({
+                "id": "20261023_123456_00001_abcd",
+                "stats": {"state": "RUNNING", "elapsedTime": "25ms", "completedSplits": 0},
+                "nextUri": "/v1/statement/q/2"
+            }),
+        ),
+        MockResponse::json(
+            "GET",
+            "/v1/statement/q/2",
+            json!({
+                "id": "20261023_123456_00001_abcd",
+                "columns": [{"name": "answer", "type": "bigint"}],
+                "data": [[42]],
+                "stats": {
+                    "state": "FINISHED",
+                    "elapsedTime": "31ms",
+                    "queuedTime": "3ms",
+                    "completedSplits": 1,
+                    "totalSplits": 1
+                }
+            }),
+        ),
+    ]);
+    let params = json!({
+        "params": {
+            "driver": "trino",
+            "host": format!("http://{}", server.address),
+            "database": "memory",
+            "username": "tester"
+        },
+        "query": "SELECT 42"
+    });
+
+    let response = query_handler::execute_query(json!(181), &params);
+    let info = &response["result"]["query_info"];
+
+    assert_eq!(info["query_id"], "20261023_123456_00001_abcd");
+    assert_eq!(info["state"], "FINISHED");
+    assert_eq!(
+        info["observed_states"],
+        json!(["QUEUED", "RUNNING", "FINISHED"])
+    );
+    assert!(info["elapsed_time_ms"].as_u64().is_some());
+    assert_eq!(info["trino_stats"]["queuedTime"], "3ms");
+    assert_eq!(info["trino_stats"]["completedSplits"], 1);
+    server.finish();
+}
+
+#[test]
+fn query_errors_include_query_id_error_code_and_sql_location() {
+    let server = MockServer::start(vec![MockResponse::json(
+        "POST",
+        "/v1/statement",
+        json!({
+            "id": "20261023_123456_00002_abcd",
+            "error": {
+                "errorName": "SYNTAX_ERROR",
+                "message": "mismatched input 'FROM'",
+                "errorCode": {"code": 1, "name": "SYNTAX_ERROR", "type": "USER_ERROR"},
+                "errorLocation": {"lineNumber": 1, "columnNumber": 8},
+                "failureInfo": {"message": "parser rejected the statement"}
+            }
+        }),
+    )]);
+    let mut client = server.client();
+    let error = client.run_query("SELECT FROM").expect_err("query fails");
+
+    assert!(error.message.contains("20261023_123456_00002_abcd"));
+    assert!(error.message.contains("SYNTAX_ERROR"));
+    assert!(error.message.contains("code 1"));
+    assert!(error.message.contains("USER_ERROR"));
+    assert!(error.message.contains("line 1, column 8"));
+    assert!(error.message.contains("parser rejected the statement"));
+    server.finish();
+}
+
+#[test]
 fn execute_query_honors_an_explicit_offset() {
     let server = MockServer::start(vec![MockResponse::json(
         "POST",
