@@ -10,7 +10,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::blocking::{Client as HttpClient, RequestBuilder, Response};
 use reqwest::header::RETRY_AFTER;
@@ -119,6 +119,15 @@ pub struct QueryResult {
     pub rows: Vec<Value>,
     /// Trino's update count, when the statement reports one.
     pub update_count: Option<u64>,
+    /// Trino's query identifier and most recently observed execution state.
+    pub query_id: Option<String>,
+    pub query_state: Option<String>,
+    /// Distinct states observed while following Trino result pages.
+    pub observed_states: Vec<String>,
+    /// Small, UI-safe subset of Trino's query statistics.
+    pub stats: Value,
+    /// Wall-clock time spent submitting the query and collecting its pages.
+    pub elapsed_time_ms: u64,
 }
 
 impl Client {
@@ -309,6 +318,7 @@ impl Client {
         if self.cancellation.is_cancelled() {
             return Err(Self::cancelled_error());
         }
+        let started_at = Instant::now();
 
         let response = self
             .send_with_retries(|| {
@@ -352,6 +362,8 @@ impl Client {
             self.collect_page(&page, &mut result)?;
             let Some(next_url) = next_url else {
                 preserve_exact_values(&mut result);
+                result.elapsed_time_ms =
+                    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 return Ok(result);
             };
 
@@ -459,12 +471,50 @@ impl Client {
             if name == "USER_CANCELED" {
                 return Err(Self::cancelled_error());
             }
-            return Err(PluginError::internal(format!("Trino {name}: {message}")));
+            return Err(PluginError::internal(format_trino_error(
+                &page, error, name, message,
+            )));
         }
         Ok(page)
     }
 
     fn collect_page(&self, page: &Value, result: &mut QueryResult) -> Result<(), PluginError> {
+        if result.query_id.is_none() {
+            result.query_id = page.get("id").and_then(Value::as_str).map(str::to_string);
+        }
+        if let Some(stats) = page.get("stats").and_then(Value::as_object) {
+            if let Some(state) = stats.get("state").and_then(Value::as_str) {
+                result.query_state = Some(state.to_string());
+                if result.observed_states.last().map(String::as_str) != Some(state) {
+                    result.observed_states.push(state.to_string());
+                }
+            }
+            let mut summary = serde_json::Map::new();
+            for key in [
+                "queued",
+                "scheduled",
+                "nodes",
+                "totalSplits",
+                "completedSplits",
+                "runningSplits",
+                "queuedSplits",
+                "cpuTime",
+                "wallTime",
+                "queuedTime",
+                "elapsedTime",
+                "cpuTimeMillis",
+                "wallTimeMillis",
+                "queuedTimeMillis",
+                "elapsedTimeMillis",
+                "processedRows",
+                "processedBytes",
+            ] {
+                if let Some(value) = stats.get(key) {
+                    summary.insert(key.to_string(), value.clone());
+                }
+            }
+            result.stats = Value::Object(summary);
+        }
         if result.columns.is_empty() {
             if let Some(columns) = page.get("columns").and_then(Value::as_array) {
                 for column in columns {
@@ -507,6 +557,54 @@ impl Client {
         }
         Ok(url)
     }
+}
+
+fn format_trino_error(page: &Value, error: &Value, name: &str, message: &str) -> String {
+    let query_id = page
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|id| format!(" query {id}"))
+        .unwrap_or_default();
+    let error_code = error.get("errorCode");
+    let code = error_code
+        .and_then(|value| value.get("code"))
+        .map(Value::to_string);
+    let error_type = error_code
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str);
+    let location = error
+        .get("errorLocation")
+        .and_then(Value::as_object)
+        .map(|location| {
+            let line = location.get("lineNumber").and_then(Value::as_u64);
+            let column = location.get("columnNumber").and_then(Value::as_u64);
+            match (line, column) {
+                (Some(line), Some(column)) => format!(" at line {line}, column {column}"),
+                (Some(line), None) => format!(" at line {line}"),
+                _ => String::new(),
+            }
+        })
+        .unwrap_or_default();
+    let failure_message = error
+        .get("failureInfo")
+        .and_then(|failure| failure.get("message"))
+        .and_then(Value::as_str)
+        .filter(|failure| !failure.is_empty() && *failure != message);
+
+    let mut details = vec![name.to_string()];
+    if let Some(code) = code {
+        details.push(format!("code {code}"));
+    }
+    if let Some(error_type) = error_type {
+        details.push(error_type.to_string());
+    }
+    let cause = failure_message
+        .map(|failure| format!("; cause: {failure}"))
+        .unwrap_or_default();
+    format!(
+        "Trino{query_id} failed ({}){location}: {message}{cause}",
+        details.join(", ")
+    )
 }
 
 fn load_pem(value: &str, description: &str) -> Result<Vec<u8>, PluginError> {

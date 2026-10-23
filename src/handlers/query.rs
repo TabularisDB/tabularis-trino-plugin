@@ -114,7 +114,14 @@ pub fn execute_query_with_cancellation(
             "rows": rows,
             "affected_rows": result.update_count.unwrap_or(0),
             "truncated": false,
-            "pagination": pagination
+            "pagination": pagination,
+            "query_info": {
+                "query_id": result.query_id,
+                "state": result.query_state,
+                "observed_states": result.observed_states,
+                "elapsed_time_ms": result.elapsed_time_ms,
+                "trino_stats": result.stats
+            }
         }),
     )
 }

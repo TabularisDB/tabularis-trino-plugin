@@ -49,6 +49,10 @@ across catalogs.
   result limits and offsets.
 - **Cancellation** — Send cancellation to Trino through its client protocol
   when Tabularis cancels a running query.
+- **Query diagnostics** — Return Trino's query ID, final state, states observed
+  while collecting pages, client elapsed time, and selected Trino timing/split
+  statistics. Trino errors include the query ID, error code/type, and SQL
+  location when the coordinator provides them.
 - **Exact values** — Preserve NULL, DECIMAL, large integers, ARRAY, MAP, and ROW
   values without silent precision loss.
 - **Secure authentication** — Support unauthenticated local development and
@@ -141,7 +145,7 @@ Trino user's permissions.
 | Schema discovery | Supported (`get_schemas`) |
 | Table and column discovery | Supported (`get_tables`, `get_columns`) |
 | View discovery | Supported, including definitions and columns |
-| SQL execution | Supported with full response paging and cancellation |
+| SQL execution | Supported with full response paging, cancellation, and query diagnostics |
 | Grid editing and CRUD | Not supported; plugin is read-only |
 | DDL actions | Not supported |
 | Visual EXPLAIN | Not supported |

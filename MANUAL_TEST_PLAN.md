@@ -128,6 +128,27 @@ Expected: 24 rows, ordered by nation key 1 through 24; TPCH nation key 0 has
 no match because `many_rows.n` starts at 1. Names should come from the TPCH
 catalog while `m.n` comes from the memory catalog.
 
+### Query diagnostics
+
+Run a successful statement through the plugin's JSON-RPC interface:
+
+```sh
+printf '%s\n' '{"jsonrpc":"2.0","id":21,"method":"execute_query","params":{"params":{"driver":"trino","host":"127.0.0.1","port":5432,"database":"memory","username":"tester","password":null,"ssl_mode":"disable"},"schema":"demo","query":"SELECT count(*) FROM many_rows"}}' | cargo run --quiet --bin trino-plugin
+```
+
+Expected: the response includes `result.query_info` with a Trino `query_id`,
+final `state` (`FINISHED`), `observed_states`, `elapsed_time_ms`, and a
+`trino_stats` object when Trino supplies statistics. The observed state list
+may skip `QUEUED` or `RUNNING` for a fast local query. This plugin returns
+diagnostics with the completed result; live progress updates in the Tabularis
+UI require host support for progress notifications.
+
+To check error diagnostics, replace the SQL with an intentionally invalid
+statement such as `SELECT FROM many_rows`. Expected: the JSON-RPC error message
+contains Trino's query ID and error name, plus its error code and line/column
+when present. Repeat the invalid query in the Tabularis editor and confirm the
+app surfaces the actionable Trino message.
+
 ## 6. Check connection errors
 
 Edit the connection and set the port to an unused local port, for example
@@ -181,7 +202,7 @@ This checks the plugin's explicit `offset` support independently of the grid.
 Run from the repository root while the fixture is up:
 
 ```sh
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"execute_query","params":{"params":{"driver":"trino","host":"127.0.0.1","port":5432,"database":"memory","username":"tester","password":null,"ssl_mode":null},"schema":"demo","query":"SELECT n FROM many_rows ORDER BY n","limit":5,"offset":10}}' | cargo run --quiet
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"execute_query","params":{"params":{"driver":"trino","host":"127.0.0.1","port":5432,"database":"memory","username":"tester","password":null,"ssl_mode":null},"schema":"demo","query":"SELECT n FROM many_rows ORDER BY n","limit":5,"offset":10}}' | cargo run --quiet --bin trino-plugin
 ```
 
 Expected: a JSON-RPC success response with rows `n = 11` through `n = 15`,
