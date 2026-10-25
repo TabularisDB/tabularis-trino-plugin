@@ -3,7 +3,7 @@
   "id": "trino",
   "icon":"https://raw.githubusercontent.com/trinodb/docs.trino.io/653a46f6bdc64b5f67302dc9ab8a0c432ca25e70/352/_static/trino.svg",
   "name": "Trino",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Tabularis driver plugin for Trino",
   "screenshots": [
     {
