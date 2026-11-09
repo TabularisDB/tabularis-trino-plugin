@@ -33,6 +33,11 @@
   "default_port": 8080,
   "default_username": "",
   "executable": "trino-plugin",
+  "connection_fields": {
+    "host": {
+      "placeholder": "trino.example.com or https://trino.example.com?externalAuthentication=true"
+    }
+  },
   "capabilities": {
     "schemas": true,
     "views": true,

@@ -17,6 +17,7 @@ use reqwest::header::RETRY_AFTER;
 use reqwest::StatusCode;
 use serde_json::Value;
 
+use crate::auth::{self, AuthenticationKind, Credentials, SslVerification};
 use crate::error::PluginError;
 use crate::models::ConnectionParams;
 
@@ -28,7 +29,14 @@ pub struct Client {
     http: HttpClient,
     endpoint: reqwest::Url,
     params: ConnectionParams,
-    username: String,
+    /// Value for `X-Trino-User`. With token or external authentication Trino
+    /// derives the user from the token, so the header is omitted unless the
+    /// user explicitly entered one.
+    user: Option<String>,
+    credentials: Credentials,
+    external_auth: bool,
+    external_auth_timeout: Duration,
+    token_cache_key: String,
     cancellation: QueryCancellation,
 }
 
@@ -45,8 +53,7 @@ pub struct QueryCancellation {
 #[derive(Clone)]
 struct CancellationHttpContext {
     http: HttpClient,
-    username: String,
-    password: Option<String>,
+    credentials: Credentials,
 }
 
 impl QueryCancellation {
@@ -70,13 +77,13 @@ impl QueryCancellation {
             .clone()
             .ok_or_else(|| PluginError::internal("query cancellation client is unavailable"))?;
 
-        let mut request = context.http.delete(next_uri);
-        if let Some(password) = context.password.filter(|value| !value.is_empty()) {
-            request = request.basic_auth(context.username, Some(password));
-        }
-        let response = request.send().map_err(|error| {
-            PluginError::internal(format!("could not cancel Trino query: {error}"))
-        })?;
+        let response = context
+            .credentials
+            .apply(context.http.delete(next_uri))
+            .send()
+            .map_err(|error| {
+                PluginError::internal(format!("could not cancel Trino query: {error}"))
+            })?;
         if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
             *current_query = None;
             Ok(())
@@ -92,13 +99,9 @@ impl QueryCancellation {
         self.cancelled.load(Ordering::SeqCst)
     }
 
-    fn attach_client(&self, http: HttpClient, username: String, password: Option<String>) {
+    fn attach_client(&self, http: HttpClient, credentials: Credentials) {
         if let Ok(mut context) = self.cancel_http.lock() {
-            *context = Some(CancellationHttpContext {
-                http,
-                username,
-                password,
-            });
+            *context = Some(CancellationHttpContext { http, credentials });
         }
     }
 
@@ -142,6 +145,13 @@ impl Client {
             .map(str::trim)
             .filter(|host| !host.is_empty())
             .ok_or_else(|| PluginError::invalid_params("Trino coordinator host is required"))?;
+        let (host, options) = auth::split_host_options(host)?;
+        let host = host.trim();
+        if host.is_empty() {
+            return Err(PluginError::invalid_params(
+                "Trino coordinator host is required",
+            ));
+        }
 
         let ssl_mode = params
             .ssl_mode
@@ -149,7 +159,7 @@ impl Client {
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
-        let secure = match ssl_mode.as_str() {
+        let ssl_mode_secure = match ssl_mode.as_str() {
             "" | "disable" | "disabled" => false,
             // Tabularis serializes the SSL-tab choices with underscores, while
             // connection strings and other clients commonly use hyphens.
@@ -162,6 +172,10 @@ impl Client {
             )))
             }
         };
+        // SSLVerification only makes sense over TLS, so it implies SSL=true.
+        let secure = options
+            .ssl
+            .unwrap_or(ssl_mode_secure || options.ssl_verification.is_some());
 
         let endpoint = if host.contains("://") {
             reqwest::Url::parse(host).map_err(|err| {
@@ -184,41 +198,112 @@ impl Client {
                 "Trino coordinator URL must include a host",
             ));
         }
+        if options.ssl_verification.is_some() && endpoint.scheme() != "https" {
+            return Err(PluginError::invalid_params(
+                "SSLVerification requires HTTPS; remove SSL=false or use an https:// URL",
+            ));
+        }
 
         let endpoint = endpoint
             .join("v1/statement")
             .map_err(|err| PluginError::invalid_params(format!("invalid Trino endpoint: {err}")))?;
-        let username = params
+        let explicit_user = params
             .username
             .as_deref()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or("tabularis")
-            .to_string();
-
-        if params
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        let password = params
             .password
-            .as_ref()
-            .is_some_and(|password| !password.is_empty())
-        {
-            if endpoint.scheme() != "https" {
-                return Err(PluginError::invalid_params(
-                    "Trino password authentication requires HTTPS",
-                ));
+            .clone()
+            .filter(|password| !password.is_empty());
+
+        let authentication = if options.external_authentication {
+            Some(AuthenticationKind::External)
+        } else if options.access_token.is_some() {
+            Some(AuthenticationKind::Token)
+        } else {
+            options.authentication
+        };
+        let token_cache_key = format!(
+            "{}|{}",
+            endpoint.origin().ascii_serialization(),
+            explicit_user.as_deref().unwrap_or("")
+        );
+        let (user, credentials, external_auth) = match authentication {
+            Some(AuthenticationKind::Token) | Some(AuthenticationKind::External) => {
+                let external = authentication == Some(AuthenticationKind::External);
+                let label = if external {
+                    "Trino external authentication"
+                } else {
+                    "Trino token authentication"
+                };
+                if endpoint.scheme() != "https" && !is_loopback(&endpoint) {
+                    return Err(PluginError::invalid_params(format!(
+                        "{label} requires HTTPS"
+                    )));
+                }
+                let token = match (options.access_token.clone(), password) {
+                    (Some(_), Some(_)) => {
+                        return Err(PluginError::invalid_params(
+                            "provide the Trino access token either as accessToken or in the password field, not both",
+                        ))
+                    }
+                    (Some(token), None) => Some(token),
+                    (None, Some(password)) if !external => Some(password),
+                    (None, Some(_)) => {
+                        return Err(PluginError::invalid_params(
+                            "Trino external authentication does not use a password; clear the password field",
+                        ))
+                    }
+                    (None, None) if !external => {
+                        return Err(PluginError::invalid_params(
+                            "Trino token authentication requires a token in the password field or the accessToken option",
+                        ))
+                    }
+                    (None, None) => auth::cached_token(&token_cache_key),
+                };
+                (explicit_user, Credentials::bearer(token), external)
             }
-            if params
-                .username
-                .as_deref()
-                .is_none_or(|name| name.trim().is_empty())
-            {
-                return Err(PluginError::invalid_params(
-                    "a Trino username is required when a password is provided",
-                ));
+            Some(AuthenticationKind::Password) | None => {
+                if authentication == Some(AuthenticationKind::Password) && password.is_none() {
+                    return Err(PluginError::invalid_params(
+                        "Trino password authentication requires a password",
+                    ));
+                }
+                let credentials = match password {
+                    Some(password) => {
+                        if endpoint.scheme() != "https" {
+                            return Err(PluginError::invalid_params(
+                                "Trino password authentication requires HTTPS",
+                            ));
+                        }
+                        let Some(username) = explicit_user.clone() else {
+                            return Err(PluginError::invalid_params(
+                                "a Trino username is required when a password is provided",
+                            ));
+                        };
+                        Credentials::basic(username, password)
+                    }
+                    None => Credentials::none(),
+                };
+                let user = explicit_user.unwrap_or_else(|| "tabularis".to_string());
+                (Some(user), credentials, false)
             }
-        }
+        };
 
         let mut http_builder = HttpClient::builder()
             .timeout(REQUEST_TIMEOUT)
             .cookie_store(true);
+        match options.ssl_verification.unwrap_or_default() {
+            SslVerification::Full => {}
+            SslVerification::Ca => {
+                http_builder = http_builder.danger_accept_invalid_hostnames(true);
+            }
+            SslVerification::None => {
+                http_builder = http_builder.danger_accept_invalid_certs(true);
+            }
+        }
         if let Some(ca) = params
             .ssl_ca
             .as_deref()
@@ -280,23 +365,25 @@ impl Client {
             .map_err(|err| PluginError::internal(format!("could not create HTTP client: {err}")))?;
 
         let cancellation = QueryCancellation::default();
-        cancellation.attach_client(http.clone(), username.clone(), params.password.clone());
+        cancellation.attach_client(http.clone(), credentials.clone());
 
         Ok(Self {
             http,
             endpoint,
             params,
-            username,
+            user,
+            credentials,
+            external_auth,
+            external_auth_timeout: options
+                .external_authentication_timeout
+                .unwrap_or(auth::DEFAULT_EXTERNAL_AUTH_TIMEOUT),
+            token_cache_key,
             cancellation,
         })
     }
 
     pub fn set_cancellation(&mut self, cancellation: QueryCancellation) {
-        cancellation.attach_client(
-            self.http.clone(),
-            self.username.clone(),
-            self.params.password.clone(),
-        );
+        cancellation.attach_client(self.http.clone(), self.credentials.clone());
         self.cancellation = cancellation;
     }
 
@@ -321,10 +408,10 @@ impl Client {
         let started_at = Instant::now();
 
         let response = self
-            .send_with_retries(|| {
+            .send_authenticated(|| {
                 let mut request = self
-                    .with_auth(self.http.post(self.endpoint.clone()))
-                    .header("X-Trino-User", &self.username)
+                    .http
+                    .post(self.endpoint.clone())
                     .header("X-Trino-Source", "Tabularis")
                     .header("X-Trino-Client-Info", "Tabularis Trino plugin")
                     .header("Content-Type", "text/plain; charset=utf-8")
@@ -340,10 +427,16 @@ impl Client {
                 if let Some(schema) = schema.filter(|value| !value.is_empty()) {
                     request = request.header("X-Trino-Schema", schema);
                 }
-                request.send()
+                if let Some(user) = &self.user {
+                    request = request.header("X-Trino-User", user);
+                }
+                request
             })
-            .map_err(|err| {
-                PluginError::internal(format!("could not submit query to Trino: {err:?}"))
+            .map_err(|err| match err {
+                SendError::Http(err) => {
+                    PluginError::internal(format!("could not submit query to Trino: {err:?}"))
+                }
+                SendError::Auth(err) => err,
             })?;
 
         let mut page = self.read_response(response)?;
@@ -367,15 +460,16 @@ impl Client {
                 return Ok(result);
             };
 
-            let response = match self
-                .send_with_retries(|| self.with_auth(self.http.get(next_url.clone())).send())
-            {
+            let response = match self.send_authenticated(|| self.http.get(next_url.clone())) {
                 Ok(response) => response,
                 Err(err) => {
                     let _ = self.cancel_query();
-                    return Err(PluginError::internal(format!(
-                        "failed while fetching Trino query results: {err}"
-                    )));
+                    return Err(match err {
+                        SendError::Http(err) => PluginError::internal(format!(
+                            "failed while fetching Trino query results: {err}"
+                        )),
+                        SendError::Auth(err) => err,
+                    });
                 }
             };
             page = match self.read_response(response) {
@@ -400,16 +494,36 @@ impl Client {
         }
     }
 
-    fn with_auth(&self, request: RequestBuilder) -> RequestBuilder {
-        match self
-            .params
-            .password
-            .as_deref()
-            .filter(|password| !password.is_empty())
-        {
-            Some(password) => request.basic_auth(&self.username, Some(password)),
-            None => request,
+    /// Send a request with the connection's credentials. With external
+    /// authentication, a 401 bearer challenge triggers the browser login and
+    /// the request is retried once with the new token.
+    fn send_authenticated<F>(&self, build: F) -> Result<Response, SendError>
+    where
+        F: Fn() -> RequestBuilder,
+    {
+        let response = self
+            .send_with_retries(|| self.credentials.apply(build()).send())
+            .map_err(SendError::Http)?;
+        if !self.external_auth || response.status() != StatusCode::UNAUTHORIZED {
+            return Ok(response);
         }
+        let Some(challenge) = auth::parse_bearer_challenge(response.headers()) else {
+            return Ok(response);
+        };
+        drop(response);
+
+        let rejected = self.credentials.bearer_token();
+        let token = auth::obtain_token(
+            &self.http,
+            &self.token_cache_key,
+            rejected.as_deref(),
+            &challenge,
+            self.external_auth_timeout,
+        )
+        .map_err(SendError::Auth)?;
+        self.credentials.set_bearer_token(Some(token));
+        self.send_with_retries(|| self.credentials.apply(build()).send())
+            .map_err(SendError::Http)
     }
 
     fn send_with_retries<F>(&self, mut send: F) -> Result<Response, reqwest::Error>
@@ -447,11 +561,16 @@ impl Client {
     fn read_response(&self, response: Response) -> Result<Value, PluginError> {
         let status = response.status();
         if !status.is_success() {
+            let hint = if status == StatusCode::UNAUTHORIZED {
+                self.unauthorized_hint(response.headers())
+            } else {
+                ""
+            };
             let message = response
                 .text()
                 .unwrap_or_else(|_| "response body unavailable".to_string());
             return Err(PluginError::internal(format!(
-                "Trino returned HTTP {status}: {}",
+                "Trino returned HTTP {status}: {}{hint}",
                 message.trim()
             )));
         }
@@ -476,6 +595,19 @@ impl Client {
             )));
         }
         Ok(page)
+    }
+
+    fn unauthorized_hint(&self, headers: &reqwest::header::HeaderMap) -> &'static str {
+        if self.external_auth {
+            return " (the external authentication token was rejected)";
+        }
+        if self.credentials.bearer_token().is_some() {
+            return " (the access token was rejected; it may be expired or issued for another audience)";
+        }
+        if !self.credentials.has_basic() && auth::parse_bearer_challenge(headers).is_some() {
+            return " (this Trino server uses OAuth2 browser login; add ?externalAuthentication=true to the Host field)";
+        }
+        ""
     }
 
     fn collect_page(&self, page: &Value, result: &mut QueryResult) -> Result<(), PluginError> {
@@ -557,6 +689,23 @@ impl Client {
         }
         Ok(url)
     }
+}
+
+enum SendError {
+    Http(reqwest::Error),
+    Auth(PluginError),
+}
+
+fn is_loopback(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn format_trino_error(page: &Value, error: &Value, name: &str, message: &str) -> String {

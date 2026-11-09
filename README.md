@@ -63,11 +63,13 @@ across catalogs.
   location when the coordinator provides them.
 - **Exact values** — Preserve NULL, DECIMAL, large integers, ARRAY, MAP, and ROW
   values without silent precision loss.
-- **Secure authentication** — Support unauthenticated local development and
-  HTTP Basic authentication over HTTPS. Password authentication over plain HTTP
-  is rejected.
-- **TLS configuration** — Support SSL modes, a custom CA certificate, and an
-  optional client certificate/private key pair.
+- **Secure authentication** — Support unauthenticated local development,
+  HTTP Basic authentication, JWT/OAuth2 access tokens, and OAuth2 external
+  (browser) authentication, for example with Keycloak. Credentials are only
+  sent over HTTPS.
+- **TLS configuration** — Support SSL modes, a custom CA certificate, an
+  optional client certificate/private key pair, and relaxed certificate
+  verification (`SSLVerification=CA` or `NONE`) for self-signed deployments.
 - **Cross-platform releases** — The release workflow builds for Linux x64/arm64,
   macOS x64/arm64, and Windows x64.
 
@@ -90,18 +92,40 @@ The connection screenshot uses a local test account; the password is masked.
 
 | Tabularis field | Description |
 | --- | --- |
-| Host | Trino coordinator hostname or URL. Use an `https://` URL for HTTPS. |
+| Host | Trino coordinator hostname or URL. Use an `https://` URL for HTTPS. Append [connection options](#connection-options) as a query string. |
 | Port | Coordinator port. Defaults to `8080`, the usual Trino HTTP port (HTTPS deployments often use `443` or `8443`). The local fixture maps host port `5432` to container port `8080`, so set `5432` when using it. |
 | Database name | Default Trino catalog. Enable multiple database browsing to browse additional catalogs. |
 | Schema | Optional default schema for browsing and query context. |
-| Username | Trino user; defaults to `tabularis` when blank. |
-| Password | Optional; password authentication requires HTTPS. |
+| Username | Trino user; defaults to `tabularis` when blank. With token or external authentication, leave it blank to use the user from the token. |
+| Password | Optional; password authentication requires HTTPS. With `authentication=token`, holds the access token. |
 | SSL mode | Disabled, Preferred, Required, Verify CA, or Verify Identity. |
 | CA certificate | Optional PEM content or a path to a PEM file. |
 | Client certificate/key | Optional PEM content or file paths. Provide both when mutual TLS is required. |
 
 The connection-string field is not used. Configure the coordinator and catalog
 through the standard connection fields.
+
+### Connection options
+
+Trino-specific options are appended to the Host field as a query string, using
+the Trino JDBC driver's property names:
+
+```text
+https://trino.example.com?externalAuthentication=true&SSLVerification=NONE
+```
+
+| Option | Description |
+| --- | --- |
+| `SSL` | `true` connects over HTTPS when the host has no `https://` scheme. |
+| `SSLVerification` | `FULL` (default) checks the certificate chain and hostname; `CA` skips the hostname check; `NONE` accepts any certificate. Implies `SSL=true`. Prefer providing a CA certificate over `NONE`. |
+| `externalAuthentication` | `true` enables OAuth2 browser login (Trino `http-server.authentication.type=oauth2`, e.g. Keycloak). On the first request the plugin opens the login page in your default browser and waits for the token. The token is reused for the plugin process lifetime and refreshed when Trino rejects it. Leave the password blank. |
+| `externalAuthenticationTimeout` | Seconds to wait for the browser login. Defaults to `110`, below Tabularis' default 120 second plugin call timeout. |
+| `accessToken` | A JWT/OAuth2 access token sent as `Authorization: Bearer`. The Host field is stored in plain text, so prefer `authentication=token`. |
+| `authentication` | `token` sends the Password field as a bearer access token (stored like a password). `password` and `external` are also accepted. |
+
+Token and external authentication require HTTPS, except for `localhost`
+coordinators. If the browser cannot be opened, the login URL is written to the
+plugin log and included in the timeout error.
 
 ## Installation
 
@@ -224,6 +248,18 @@ HTTPS/Basic authentication. Stop the fixture when finished:
 ```sh
 docker compose -f fixture/docker-compose.yml down
 ```
+
+To test OAuth2 external authentication, start Trino with a Keycloak identity
+provider (Keycloak user `alice`, password `alice`):
+
+```bash
+docker compose -f fixture/oauth/docker-compose.yaml up -d
+```
+
+Connect with Host
+`https://localhost:8443?externalAuthentication=true&SSLVerification=NONE` and a
+blank username and password; the plugin opens the Keycloak login page in your
+browser. Stop it with `docker compose -f fixture/oauth/docker-compose.yaml down`.
 
 ## License
 
