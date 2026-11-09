@@ -11,6 +11,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+mod auth;
 mod client;
 mod error;
 mod handlers;

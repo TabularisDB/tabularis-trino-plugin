@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+#[path = "../src/auth.rs"]
+mod auth;
 #[path = "../src/client.rs"]
 mod client;
 #[path = "../src/error.rs"]

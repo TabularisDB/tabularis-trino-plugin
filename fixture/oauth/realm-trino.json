@@ -1,0 +1,41 @@
+{
+  "realm": "trino",
+  "enabled": true,
+  "sslRequired": "none",
+  "clients": [
+    {
+      "clientId": "trino",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "trino-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["https://localhost:8443/*", "https://127.0.0.1:8443/*"],
+      "webOrigins": ["+"],
+      "protocolMappers": [
+        {
+          "name": "trino-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "trino",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Example",
+      "credentials": [{ "type": "password", "value": "alice", "temporary": false }]
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+# Trino with OAuth2 (Keycloak) authentication over HTTPS, for manually testing
+# `externalAuthentication=true`.
+#
+# Trino shares Keycloak's network namespace so both the browser and Trino
+# reach Keycloak at the same issuer URL: http://localhost:8180/realms/trino.
+#
+#   Keycloak: http://localhost:8180  (admin/admin; Trino user alice/alice)
+#   Trino:    https://localhost:8443 (self-signed; CA in ../https/certs/ca.crt)
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: trino-oauth-keycloak
+    command: ["start-dev", "--import-realm", "--http-port=8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8180
+    ports:
+      - "8180:8180"
+      - "8443:8443"
+    volumes:
+      - ./realm-trino.json:/opt/keycloak/data/import/realm-trino.json:ro
+
+  trino:
+    image: trinodb/trino:483
+    container_name: trino-oauth
+    network_mode: "service:keycloak"
+    depends_on:
+      - keycloak
+    restart: on-failure
+    volumes:
+      - ../catalog:/etc/trino/catalog
+      - ./config.properties:/etc/trino/config.properties
+      - ../https/certs:/etc/trino/certs
