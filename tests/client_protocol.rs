@@ -745,15 +745,32 @@ fn batch_metadata_propagates_trino_permission_errors() {
         "/v1/statement",
         json!({"error": {"errorName": "USER_ERROR", "message": "Access denied"}}),
     )]);
-    let mut params = batch_metadata_params(&format!("http://{}", server.address), "private");
-    params["tables"] = json!(["secret_table"]);
+    let params = batch_metadata_params(&format!("http://{}", server.address), "private");
 
-    let response = metadata_handler::get_all_columns_batch(json!(20), &params);
+    let response = metadata_handler::get_schema_snapshot(json!(20), &params);
 
     assert!(response["error"]["message"]
         .as_str()
         .unwrap()
         .contains("Access denied"));
+    assert!(response.get("result").is_none());
+    server.finish();
+
+    let server = MockServer::start(vec![MockResponse::json(
+        "POST",
+        "/v1/statement",
+        json!({"error": {"errorName": "USER_ERROR", "message": "Access denied"}}),
+    )]);
+    let mut params = batch_metadata_params(&format!("http://{}", server.address), "private");
+    params["tables"] = json!(["secret_table"]);
+
+    let response = metadata_handler::get_all_columns_batch(json!(25), &params);
+
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Access denied"));
+    assert!(response.get("result").is_none());
     server.finish();
 }
 
