@@ -1,0 +1,117 @@
+name: Bug report
+description: Report a problem with the Tabularis Trino plugin
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much as you can —
+        version and connection details make triage much faster.
+
+        **Before submitting, remove passwords, tokens, and internal hostnames from every field.**
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Find it in Tabularis under Settings → Plugins, or in the `"version"` field of the installed `.tabularium` file.
+      placeholder: e.g. 0.3.1
+    validations:
+      required: true
+  - type: input
+    id: tabularis-version
+    attributes:
+      label: Tabularis version
+      placeholder: e.g. 1.4.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os-arch
+    attributes:
+      label: OS and architecture
+      options:
+        - macOS arm64 (Apple Silicon)
+        - macOS x64 (Intel)
+        - Linux x64
+        - Linux arm64
+        - Windows x64
+        - Other (specify in steps to reproduce)
+    validations:
+      required: true
+  - type: input
+    id: trino-version
+    attributes:
+      label: Trino version
+      description: Run `SELECT version()` or check the coordinator's `/v1/info` endpoint.
+      placeholder: e.g. 455
+    validations:
+      required: true
+  - type: dropdown
+    id: authentication
+    attributes:
+      label: Authentication
+      description: How does the connection authenticate to Trino?
+      options:
+        - None (unauthenticated)
+        - Password (HTTP Basic)
+        - Access token (JWT / OAuth2 bearer token)
+        - External (OAuth2 browser login)
+        - Client certificate
+    validations:
+      required: true
+  - type: textarea
+    id: connection-settings
+    attributes:
+      label: Connection settings
+      description: >
+        The Host field including any `?options` query string (e.g. `externalAuthentication`,
+        `accessToken`, `authentication`, `SSLVerification`, `SSL`), the SSL mode, and whether
+        a CA certificate is set. **Redact tokens, passwords, and internal hostnames.**
+      placeholder: |
+        Host: https://trino.example.com?externalAuthentication=true&SSLVerification=NONE
+        SSL: enabled
+        CA certificate: not set
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a connection with ...
+        2. Run the query ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: error-message
+    attributes:
+      label: Exact error message
+      description: The error message shown in Tabularis, verbatim.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Plugin log output (optional)
+      description: Start Tabularis from a terminal and paste relevant stderr output from the plugin.
+      render: text
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Confirmation
+      options:
+        - label: I removed passwords, tokens, and internal hostnames
+          required: true

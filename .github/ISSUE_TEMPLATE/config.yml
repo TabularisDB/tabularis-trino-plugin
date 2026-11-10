@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Connection configuration documentation
+    url: https://github.com/TabularisDB/tabularis-trino-plugin#connection-configuration
+    about: How to fill in the Host, Username, Password, and SSL fields.
+  - name: Connection options reference
+    url: https://github.com/TabularisDB/tabularis-trino-plugin#connection-options
+    about: Query-string options such as externalAuthentication, accessToken, authentication, SSLVerification, and SSL.
+  - name: Tabularis app issues
+    url: https://github.com/TabularisDB/tabularis/issues
+    about: For problems with the Tabularis app itself that are not specific to the Trino driver.
