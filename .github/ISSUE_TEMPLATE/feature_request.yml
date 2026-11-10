@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a new capability or connection option for the Trino plugin
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do that the plugin doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: >
+        Describe what the plugin should do — for example a new connection option
+        (like `externalAuthentication` or `SSLVerification`) or a Tabularis capability.
+    validations:
+      required: true
+  - type: textarea
+    id: other-clients
+    attributes:
+      label: How other clients handle it (optional)
+      description: If relevant, how do the Trino JDBC driver, Trino CLI, or DBeaver support this?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
