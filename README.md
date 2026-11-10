@@ -52,6 +52,9 @@ across catalogs.
   columns, views, view definitions, and view columns visible to the Trino user.
 - **Query execution** — Run SQL in the Tabularis editor and notebooks, including
   federated queries across configured catalogs.
+- **Session properties** — Retain Trino `SET SESSION` and `RESET SESSION`
+  changes across queries that share a Tabularis session, while isolating state
+  by session and connection.
 - **Complete results** — Follow Trino's result-page links and preserve row
   order, including when a response page contains no rows. Support requested
   result limits and offsets.
@@ -72,6 +75,19 @@ across catalogs.
   verification (`SSLVerification=CA` or `NONE`) for self-signed deployments.
 - **Cross-platform releases** — The release workflow builds for Linux x64/arm64,
   macOS x64/arm64, and Windows x64.
+
+### Session state limitations
+
+The plugin retains Trino session properties delivered through
+`X-Trino-Set-Session` and `X-Trino-Clear-Session` for subsequent requests that
+share the host-provided `session_id`. State is process-local and is released
+when Tabularis closes the plugin process for that connection session.
+
+Other Trino protocol state is not retained yet: `USE` catalog/schema changes,
+role changes, prepared statements, and transaction IDs. Select catalogs and
+schemas through Tabularis, use fully qualified names where needed, and do not
+rely on multi-query transaction or prepared-statement state persisting between
+plugin calls.
 
 This plugin is read-only. Grid editing, CRUD, DDL actions, and Visual
 EXPLAIN are not supported. Presto compatibility has not been evaluated.

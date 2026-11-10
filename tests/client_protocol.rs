@@ -13,6 +13,29 @@ mod models;
 #[path = "../src/handlers/query.rs"]
 mod query_handler;
 
+mod handlers {
+    use serde_json::Value;
+
+    use crate::client::Client;
+    use crate::error::PluginError;
+    use crate::models::{inner_params, ConnectionParams};
+
+    pub fn connect_client(request_params: &Value) -> Result<Client, PluginError> {
+        let mut client =
+            Client::connect(ConnectionParams::from_value(inner_params(request_params)))?;
+        if let Some(session_id) = request_params
+            .get("session_id")
+            .or_else(|| inner_params(request_params).get("session_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+        {
+            client.set_session_id(session_id)?;
+        }
+        Ok(client)
+    }
+}
+
 mod rpc {
     use serde_json::{json, Value};
 
@@ -46,6 +69,7 @@ struct MockResponse {
     status: u16,
     reason: &'static str,
     body: String,
+    headers: Vec<(String, String)>,
 }
 
 impl MockResponse {
@@ -56,6 +80,7 @@ impl MockResponse {
             status: 200,
             reason: "OK",
             body: value.to_string(),
+            headers: Vec::new(),
         }
     }
 
@@ -72,7 +97,13 @@ impl MockResponse {
             status,
             reason,
             body: body.to_string(),
+            headers: Vec::new(),
         }
+    }
+
+    fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
     }
 }
 
@@ -162,12 +193,16 @@ fn write_response(stream: &mut TcpStream, response: &MockResponse) {
     let body = response.body.as_bytes();
     write!(
         stream,
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         response.status,
         response.reason,
         body.len()
     )
     .expect("write response headers");
+    for (name, value) in &response.headers {
+        write!(stream, "{name}: {value}\r\n").expect("write custom response header");
+    }
+    write!(stream, "\r\n").expect("finish response headers");
     stream.write_all(body).expect("write response body");
 }
 
@@ -921,6 +956,115 @@ fn execute_query_collects_all_trino_pages_then_applies_requested_page() {
     assert_eq!(response["result"]["pagination"]["has_more"], true);
     let requests = server.finish();
     assert!(requests[0].ends_with("SELECT n FROM many_rows ORDER BY n"));
+}
+
+fn session_query_params(host: &str, session_id: &str, query: &str) -> Value {
+    json!({
+        "params": {
+            "driver": "trino",
+            "host": host,
+            "database": "memory",
+            "username": "tester"
+        },
+        "session_id": session_id,
+        "query": query
+    })
+}
+
+#[test]
+fn session_properties_persist_clear_and_remain_isolated_by_session_id() {
+    let server = MockServer::start(vec![
+        MockResponse::json("POST", "/v1/statement", json!({"data": []}))
+            .with_header("X-Trino-Set-Session", "query_max_run_time=10m")
+            .with_header("X-Trino-Set-Session", "join_distribution_type=BROADCAST"),
+        MockResponse::json("POST", "/v1/statement", json!({"data": []})),
+        MockResponse::json("POST", "/v1/statement", json!({"data": []}))
+            .with_header("X-Trino-Clear-Session", "query_max_run_time"),
+        MockResponse::json("POST", "/v1/statement", json!({"data": []})),
+    ]);
+    let host = format!("http://{}", server.address);
+
+    for (session_id, query) in [
+        ("editor-a", "SET SESSION query_max_run_time = '10m'"),
+        ("editor-b", "SHOW SESSION"),
+        ("editor-a", "SHOW SESSION"),
+        ("editor-a", "SELECT 1"),
+    ] {
+        let params = session_query_params(&host, session_id, query);
+        let response = query_handler::execute_query(json!(session_id), &params);
+        assert!(response.get("result").is_some());
+    }
+
+    let requests = server.finish();
+    assert!(!requests[0]
+        .to_ascii_lowercase()
+        .contains("x-trino-session:"));
+    assert!(!requests[1]
+        .to_ascii_lowercase()
+        .contains("x-trino-session:"));
+    let third = requests[2].to_ascii_lowercase();
+    assert!(
+        third.contains("x-trino-session: join_distribution_type=broadcast,query_max_run_time=10m")
+    );
+    let fourth = requests[3].to_ascii_lowercase();
+    assert!(fourth.contains("x-trino-session: join_distribution_type=broadcast"));
+    assert!(!fourth.contains("query_max_run_time=10m"));
+}
+
+#[test]
+fn session_properties_are_isolated_between_connections() {
+    let first = MockServer::start(vec![MockResponse::json(
+        "POST",
+        "/v1/statement",
+        json!({"data": []}),
+    )
+    .with_header("X-Trino-Set-Session", "query_max_run_time=10m")]);
+    let second = MockServer::start(vec![MockResponse::json(
+        "POST",
+        "/v1/statement",
+        json!({"data": []}),
+    )]);
+
+    let first_params = session_query_params(
+        &format!("http://{}", first.address),
+        "shared-editor-id",
+        "SET SESSION query_max_run_time = '10m'",
+    );
+    query_handler::execute_query(json!(30), &first_params);
+    let second_params = session_query_params(
+        &format!("http://{}", second.address),
+        "shared-editor-id",
+        "SHOW SESSION",
+    );
+    query_handler::execute_query(json!(31), &second_params);
+
+    first.finish();
+    let second_requests = second.finish();
+    assert!(!second_requests[0]
+        .to_ascii_lowercase()
+        .contains("x-trino-session:"));
+}
+
+#[test]
+fn failed_trino_responses_do_not_change_retained_session_properties() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({"error": {"errorName": "USER_ERROR", "message": "query failed"}}),
+        )
+        .with_header("X-Trino-Set-Session", "query_max_run_time=10m"),
+        MockResponse::json("POST", "/v1/statement", json!({"data": []})),
+    ]);
+    let host = format!("http://{}", server.address);
+    for query in ["SELECT invalid", "SHOW SESSION"] {
+        let params = session_query_params(&host, "failed-set-session", query);
+        query_handler::execute_query(json!(32), &params);
+    }
+    let requests = server.finish();
+    assert!(!requests[1]
+        .to_ascii_lowercase()
+        .contains("x-trino-session:"));
 }
 
 #[test]

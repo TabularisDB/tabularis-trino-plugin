@@ -4,10 +4,11 @@
 //! from the `nextUri` returned by Trino. The client keeps the last `nextUri`
 //! so callers can cancel an in-flight query with `cancel_query`.
 
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,6 +26,23 @@ const DEFAULT_PORT: u16 = 8080;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_TRANSIENT_RETRIES: usize = 5;
 
+/// Session properties are process-local. Tabularis keeps one plugin process
+/// alive for a connection session, so the host releasing that process also
+/// releases its retained Trino state.
+static TRINO_SESSION_PROPERTIES: OnceLock<Mutex<HashMap<SessionKey, BTreeMap<String, String>>>> =
+    OnceLock::new();
+
+fn session_properties() -> &'static Mutex<HashMap<SessionKey, BTreeMap<String, String>>> {
+    TRINO_SESSION_PROPERTIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct SessionKey {
+    endpoint: String,
+    user: String,
+    session_id: String,
+}
+
 pub struct Client {
     http: HttpClient,
     endpoint: reqwest::Url,
@@ -37,6 +55,7 @@ pub struct Client {
     external_auth: bool,
     external_auth_timeout: Duration,
     token_cache_key: String,
+    session_key: Option<SessionKey>,
     cancellation: QueryCancellation,
 }
 
@@ -378,8 +397,82 @@ impl Client {
                 .external_authentication_timeout
                 .unwrap_or(auth::DEFAULT_EXTERNAL_AUTH_TIMEOUT),
             token_cache_key,
+            session_key: None,
             cancellation,
         })
+    }
+
+    /// Associate this client call with a host session so Trino's session
+    /// properties survive the short-lived client created for each RPC.
+    pub fn set_session_id(&mut self, session_id: &str) -> Result<(), PluginError> {
+        let key = SessionKey {
+            endpoint: self.endpoint.origin().ascii_serialization(),
+            user: self.user.clone().unwrap_or_default(),
+            session_id: session_id.to_string(),
+        };
+        let mut sessions = session_properties()
+            .lock()
+            .map_err(|_| PluginError::internal("Trino session state is unavailable"))?;
+        sessions.entry(key.clone()).or_default();
+        self.session_key = Some(key);
+        Ok(())
+    }
+
+    fn session_header(&self) -> Result<Option<String>, PluginError> {
+        let Some(key) = self.session_key.as_ref() else {
+            return Ok(None);
+        };
+        let sessions = session_properties()
+            .lock()
+            .map_err(|_| PluginError::internal("Trino session state is unavailable"))?;
+        let Some(properties) = sessions.get(key) else {
+            return Ok(None);
+        };
+        if properties.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            properties
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        ))
+    }
+
+    fn apply_session_updates(&self, cleared: &[String], set: &[String]) -> Result<(), PluginError> {
+        let Some(key) = self.session_key.as_ref() else {
+            return Ok(());
+        };
+        let parsed = set
+            .iter()
+            .map(|header| {
+                let Some((name, value)) = header.split_once('=') else {
+                    return Err(PluginError::internal(
+                        "Trino returned an invalid X-Trino-Set-Session header",
+                    ));
+                };
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(PluginError::internal(
+                        "Trino returned an empty session property name",
+                    ));
+                }
+                Ok((name.to_string(), value.trim().to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut sessions = session_properties()
+            .lock()
+            .map_err(|_| PluginError::internal("Trino session state is unavailable"))?;
+        let properties = sessions.entry(key.clone()).or_default();
+        for name in cleared {
+            properties.remove(name.trim());
+        }
+        for (name, value) in parsed {
+            properties.insert(name, value);
+        }
+        Ok(())
     }
 
     pub fn set_cancellation(&mut self, cancellation: QueryCancellation) {
@@ -406,6 +499,7 @@ impl Client {
             return Err(Self::cancelled_error());
         }
         let started_at = Instant::now();
+        let session_header = self.session_header()?;
 
         let response = self
             .send_authenticated(|| {
@@ -416,6 +510,9 @@ impl Client {
                     .header("X-Trino-Client-Info", "Tabularis Trino plugin")
                     .header("Content-Type", "text/plain; charset=utf-8")
                     .body(sql.to_string());
+                if let Some(session) = session_header.as_deref() {
+                    request = request.header("X-Trino-Session", session);
+                }
                 if let Some(catalog) = self
                     .params
                     .database
@@ -575,9 +672,42 @@ impl Client {
             )));
         }
 
+        let (cleared_sessions, set_sessions) = if self.session_key.is_some() {
+            let cleared = response
+                .headers()
+                .get_all("x-trino-clear-session")
+                .iter()
+                .map(|value| {
+                    value.to_str().map(str::to_string).map_err(|error| {
+                        PluginError::internal(format!(
+                            "Trino returned an invalid X-Trino-Clear-Session header: {error}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let set = response
+                .headers()
+                .get_all("x-trino-set-session")
+                .iter()
+                .map(|value| {
+                    value.to_str().map(str::to_string).map_err(|error| {
+                        PluginError::internal(format!(
+                            "Trino returned an invalid X-Trino-Set-Session header: {error}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            (cleared, set)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
         let page: Value = response
             .json()
             .map_err(|err| PluginError::internal(format!("Trino returned invalid JSON: {err}")))?;
+        if page.get("error").is_none() {
+            self.apply_session_updates(&cleared_sessions, &set_sessions)?;
+        }
         if let Some(error) = page.get("error") {
             let name = error
                 .get("errorName")

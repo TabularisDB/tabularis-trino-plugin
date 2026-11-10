@@ -6,7 +6,8 @@
 
 use serde_json::{json, Value};
 
-use crate::client::{Client, QueryResult};
+use crate::client::QueryResult;
+use crate::handlers::connect_client;
 use crate::models::{inner_params, ConnectionParams};
 use crate::rpc::{error_response, ok_response};
 
@@ -31,8 +32,7 @@ fn first_column_strings(result: QueryResult, description: &str) -> Result<Vec<St
 }
 
 pub fn get_databases(id: Value, request_params: &Value) -> Value {
-    let params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = match Client::connect(params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };
@@ -59,7 +59,7 @@ pub fn get_schemas(id: Value, request_params: &Value) -> Value {
         );
     }
 
-    let mut client = match Client::connect(params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };
@@ -97,8 +97,7 @@ pub fn get_tables(id: Value, request_params: &Value) -> Value {
         Ok(schema) => schema,
         Err(message) => return error_response(id, -32602, message),
     };
-    let params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = match Client::connect(params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };
@@ -139,8 +138,7 @@ pub fn get_columns(id: Value, request_params: &Value) -> Value {
         sql_string_literal(schema),
         sql_string_literal(table)
     );
-    let params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = match Client::connect(params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };
@@ -209,8 +207,7 @@ pub fn get_views(id: Value, request_params: &Value) -> Value {
         Ok(schema) => schema,
         Err(message) => return error_response(id, -32602, message),
     };
-    let params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = match Client::connect(params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };
@@ -251,8 +248,7 @@ pub fn get_view_definition(id: Value, request_params: &Value) -> Value {
             "view name is required to request its definition",
         );
     };
-    let params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = match Client::connect(params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };
@@ -339,8 +335,7 @@ fn all_columns_by_table(
          ORDER BY table_name, ordinal_position",
         sql_string_literal(schema)
     );
-    let params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = Client::connect(params)?;
+    let mut client = connect_client(request_params)?;
     let result = client.run_query_with_schema(&sql, Some(schema))?;
     for row in &result.rows {
         let Some(table) = result_cell(&result, row, "table_name").and_then(Value::as_str) else {
