@@ -307,14 +307,115 @@ pub fn get_routine_definition(id: Value, _params: &Value) -> Value {
     ok_response(id, Value::String(String::new()))
 }
 
-pub fn get_schema_snapshot(id: Value, _params: &Value) -> Value {
-    // Used for the ER diagram. Return
-    // [{ name, columns: [...], foreign_keys: [...] }].
-    ok_response(id, json!([]))
+fn all_columns_by_table(
+    request_params: &Value,
+    requested_tables: Option<&[String]>,
+) -> Result<std::collections::BTreeMap<String, Vec<Value>>, crate::error::PluginError> {
+    let schema =
+        selected_schema(request_params).map_err(crate::error::PluginError::invalid_params)?;
+    let mut tables = std::collections::BTreeMap::<String, Vec<Value>>::new();
+    if let Some(requested_tables) = requested_tables {
+        for table in requested_tables {
+            tables.insert(table.clone(), Vec::new());
+        }
+        if requested_tables.is_empty() {
+            return Ok(tables);
+        }
+    }
+    let table_filter = requested_tables.map_or_else(String::new, |requested_tables| {
+        format!(
+            " AND table_name IN ({})",
+            requested_tables
+                .iter()
+                .map(|table| sql_string_literal(table))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    let sql = format!(
+        "SELECT table_name, column_name, data_type, is_nullable, column_default \
+         FROM information_schema.columns \
+         WHERE table_schema = {}{table_filter} \
+         ORDER BY table_name, ordinal_position",
+        sql_string_literal(schema)
+    );
+    let params = ConnectionParams::from_value(inner_params(request_params));
+    let mut client = Client::connect(params)?;
+    let result = client.run_query_with_schema(&sql, Some(schema))?;
+    for row in &result.rows {
+        let Some(table) = result_cell(&result, row, "table_name").and_then(Value::as_str) else {
+            return Err(crate::error::PluginError::internal(
+                "Trino returned a column without its table name",
+            ));
+        };
+        let Some(name) = result_cell(&result, row, "column_name").and_then(Value::as_str) else {
+            return Err(crate::error::PluginError::internal(
+                "Trino returned a column without its name",
+            ));
+        };
+        let Some(data_type) = result_cell(&result, row, "data_type").and_then(Value::as_str) else {
+            return Err(crate::error::PluginError::internal(format!(
+                "Trino returned no type for column '{name}'"
+            )));
+        };
+        let nullable = result_cell(&result, row, "is_nullable");
+        let is_nullable = nullable.is_some_and(|value| {
+            value.as_bool().unwrap_or_else(|| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("YES"))
+            })
+        });
+        let default_value = result_cell(&result, row, "column_default")
+            .cloned()
+            .unwrap_or(Value::Null);
+        tables.entry(table.to_string()).or_default().push(json!({
+            "name": name,
+            "data_type": data_type,
+            "is_pk": false,
+            "is_nullable": is_nullable,
+            "is_auto_increment": false,
+            "is_generated": false,
+            "default_value": default_value,
+            "character_maximum_length": null,
+            "comment": null
+        }));
+    }
+    Ok(tables)
 }
 
-pub fn get_all_columns_batch(id: Value, _params: &Value) -> Value {
-    ok_response(id, json!({}))
+pub fn get_schema_snapshot(id: Value, request_params: &Value) -> Value {
+    match all_columns_by_table(request_params, None) {
+        Ok(tables) => ok_response(
+            id,
+            json!(tables
+                .into_iter()
+                .map(|(name, columns)| json!({
+                    "name": name,
+                    "columns": columns,
+                    "foreign_keys": []
+                }))
+                .collect::<Vec<_>>()),
+        ),
+        Err(error) => error_response(id, error.code, &error.message),
+    }
+}
+
+pub fn get_all_columns_batch(id: Value, request_params: &Value) -> Value {
+    let requested_tables = request_params
+        .get("tables")
+        .and_then(Value::as_array)
+        .map(|tables| {
+            tables
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+    match all_columns_by_table(request_params, requested_tables.as_deref()) {
+        Ok(tables) => ok_response(id, json!(tables)),
+        Err(error) => error_response(id, error.code, &error.message),
+    }
 }
 
 pub fn get_all_foreign_keys_batch(id: Value, _params: &Value) -> Value {
