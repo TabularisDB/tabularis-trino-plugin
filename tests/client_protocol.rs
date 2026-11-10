@@ -609,6 +609,116 @@ fn get_columns_returns_type_nullability_and_default_without_interpolating_identi
     assert!(requests[0].contains("table_name = 'O''Brien'"));
 }
 
+fn batch_columns_response(rows: serde_json::Value) -> MockResponse {
+    MockResponse::json(
+        "POST",
+        "/v1/statement",
+        json!({
+            "columns": [
+                {"name": "table_name", "type": "varchar"},
+                {"name": "column_name", "type": "varchar"},
+                {"name": "data_type", "type": "varchar"},
+                {"name": "is_nullable", "type": "varchar"},
+                {"name": "column_default", "type": "varchar"}
+            ],
+            "data": rows
+        }),
+    )
+}
+
+fn batch_metadata_params(host: &str, schema: &str) -> Value {
+    json!({
+        "params": {
+            "driver": "trino",
+            "host": host,
+            "database": "memory",
+            "username": "tester"
+        },
+        "schema": schema
+    })
+}
+
+#[test]
+fn schema_snapshot_returns_tables_and_columns_from_selected_catalog_and_schema() {
+    let server = MockServer::start(vec![batch_columns_response(json!([
+        ["types_test", "amount", "decimal(38, 9)", "NO", null],
+        ["types_test", "notes", "varchar", "YES", null]
+    ]))]);
+    let params = batch_metadata_params(&format!("http://{}", server.address), "demo");
+
+    let response = metadata_handler::get_schema_snapshot(json!(16), &params);
+
+    assert_eq!(response["result"][0]["name"], "types_test");
+    assert_eq!(response["result"][0]["columns"][0]["name"], "amount");
+    assert_eq!(response["result"][0]["columns"][1]["is_nullable"], true);
+    assert_eq!(response["result"][0]["foreign_keys"], json!([]));
+    let requests = server.finish();
+    let request = requests[0].to_ascii_lowercase();
+    assert!(request.contains("x-trino-catalog: memory"));
+    assert!(request.contains("x-trino-schema: demo"));
+    assert!(request.contains("where table_schema = 'demo'"));
+}
+
+#[test]
+fn all_columns_batch_matches_individual_column_metadata_and_quotes_schema() {
+    let server = MockServer::start(vec![batch_columns_response(json!([
+        ["types_test", "amount", "decimal(38, 9)", "NO", null],
+        ["types_test", "notes", "varchar", "YES", null]
+    ]))]);
+    let mut params = batch_metadata_params(&format!("http://{}", server.address), "O'Brien");
+    params["tables"] = json!(["types_test"]);
+
+    let response = metadata_handler::get_all_columns_batch(json!(17), &params);
+
+    assert_eq!(response["result"]["types_test"][0]["name"], "amount");
+    assert_eq!(
+        response["result"]["types_test"][0]["data_type"],
+        "decimal(38, 9)"
+    );
+    assert_eq!(response["result"]["types_test"][0]["is_nullable"], false);
+    assert_eq!(response["result"]["types_test"][1]["is_nullable"], true);
+    let requests = server.finish();
+    assert!(requests[0].contains("table_schema = 'O''Brien'"));
+    assert!(requests[0].contains("table_name IN ('types_test')"));
+}
+
+#[test]
+fn batch_metadata_propagates_trino_permission_errors() {
+    let server = MockServer::start(vec![MockResponse::json(
+        "POST",
+        "/v1/statement",
+        json!({"error": {"errorName": "USER_ERROR", "message": "Access denied"}}),
+    )]);
+    let mut params = batch_metadata_params(&format!("http://{}", server.address), "private");
+    params["tables"] = json!(["secret_table"]);
+
+    let response = metadata_handler::get_all_columns_batch(json!(20), &params);
+
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Access denied"));
+    server.finish();
+}
+
+#[test]
+fn metadata_batch_methods_return_empty_collections_for_a_genuinely_empty_schema() {
+    let server = MockServer::start(vec![batch_columns_response(json!([]))]);
+    let params = batch_metadata_params(&format!("http://{}", server.address), "empty");
+
+    let response = metadata_handler::get_schema_snapshot(json!(18), &params);
+
+    assert_eq!(response["result"], json!([]));
+    server.finish();
+
+    let server = MockServer::start(vec![batch_columns_response(json!([]))]);
+    let params = batch_metadata_params(&format!("http://{}", server.address), "empty");
+    let response = metadata_handler::get_all_columns_batch(json!(19), &params);
+
+    assert_eq!(response["result"], json!({}));
+    server.finish();
+}
+
 #[test]
 fn get_views_returns_view_names_in_the_selected_schema() {
     let server = MockServer::start(vec![MockResponse::json(
