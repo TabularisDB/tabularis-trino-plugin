@@ -1,6 +1,6 @@
 [package]
 name = "trino-plugin"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 description = "Tabularis driver plugin for Trino"
 license = "Apache-2.0"
