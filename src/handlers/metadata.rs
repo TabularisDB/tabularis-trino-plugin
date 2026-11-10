@@ -335,8 +335,7 @@ fn all_columns_by_table(
          ORDER BY table_name, ordinal_position",
         sql_string_literal(schema)
     );
-    let params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = Client::connect(params)?;
+    let mut client = connect_client(request_params)?;
     let result = client.run_query_with_schema(&sql, Some(schema))?;
     for row in &result.rows {
         let Some(table) = result_cell(&result, row, "table_name").and_then(Value::as_str) else {
