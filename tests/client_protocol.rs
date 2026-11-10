@@ -683,6 +683,62 @@ fn all_columns_batch_matches_individual_column_metadata_and_quotes_schema() {
 }
 
 #[test]
+fn all_columns_batch_matches_get_columns_exactly() {
+    let batch_server = MockServer::start(vec![batch_columns_response(json!([
+        ["O'Brien", "amount", "decimal(38, 9)", "NO", null],
+        ["O'Brien", "notes", "varchar", "YES", "'n/a'"]
+    ]))]);
+    let mut batch_params =
+        batch_metadata_params(&format!("http://{}", batch_server.address), "demo");
+    batch_params["tables"] = json!(["O'Brien"]);
+    let batch_response = metadata_handler::get_all_columns_batch(json!(21), &batch_params);
+    let batch_columns = batch_response["result"]["O'Brien"].clone();
+    let batch_requests = batch_server.finish();
+    assert!(batch_requests[0].contains("table_name IN ('O''Brien')"));
+
+    let columns_server = MockServer::start(vec![MockResponse::json(
+        "POST",
+        "/v1/statement",
+        json!({
+            "columns": [
+                {"name": "column_name", "type": "varchar"},
+                {"name": "data_type", "type": "varchar"},
+                {"name": "is_nullable", "type": "varchar"},
+                {"name": "column_default", "type": "varchar"}
+            ],
+            "data": [
+                ["amount", "decimal(38, 9)", "NO", null],
+                ["notes", "varchar", "YES", "'n/a'"]
+            ]
+        }),
+    )]);
+    let mut columns_params =
+        batch_metadata_params(&format!("http://{}", columns_server.address), "demo");
+    columns_params["table"] = json!("O'Brien");
+    let columns_response = metadata_handler::get_columns(json!(22), &columns_params);
+    let individual_columns = columns_response["result"].clone();
+    let columns_requests = columns_server.finish();
+    assert!(columns_requests[0].contains("table_name = 'O''Brien'"));
+
+    assert_eq!(batch_columns, individual_columns);
+}
+
+#[test]
+fn batch_metadata_propagates_coordinator_connection_errors() {
+    let params = batch_metadata_params("http://127.0.0.1:1", "demo");
+
+    let snapshot = metadata_handler::get_schema_snapshot(json!(23), &params);
+    assert!(snapshot.get("error").is_some());
+    assert!(snapshot.get("result").is_none());
+
+    let mut batch_params = params;
+    batch_params["tables"] = json!(["types_test"]);
+    let batch = metadata_handler::get_all_columns_batch(json!(24), &batch_params);
+    assert!(batch.get("error").is_some());
+    assert!(batch.get("result").is_none());
+}
+
+#[test]
 fn batch_metadata_propagates_trino_permission_errors() {
     let server = MockServer::start(vec![MockResponse::json(
         "POST",
