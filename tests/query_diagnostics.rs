@@ -13,6 +13,29 @@ mod models;
 #[path = "../src/handlers/query.rs"]
 mod query_handler;
 
+mod handlers {
+    use serde_json::Value;
+
+    use crate::client::Client;
+    use crate::error::PluginError;
+    use crate::models::{inner_params, ConnectionParams};
+
+    pub fn connect_client(request_params: &Value) -> Result<Client, PluginError> {
+        let mut client =
+            Client::connect(ConnectionParams::from_value(inner_params(request_params)))?;
+        if let Some(session_id) = request_params
+            .get("session_id")
+            .or_else(|| inner_params(request_params).get("session_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+        {
+            client.set_session_id(session_id)?;
+        }
+        Ok(client)
+    }
+}
+
 mod rpc {
     use serde_json::{json, Value};
 

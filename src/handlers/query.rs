@@ -5,13 +5,12 @@
 
 use serde_json::{json, Value};
 
-use crate::client::{Client, QueryCancellation};
-use crate::models::{inner_params, ConnectionParams};
+use crate::client::QueryCancellation;
+use crate::handlers::connect_client;
 use crate::rpc::{error_response, not_implemented, ok_response};
 
 pub fn test_connection(id: Value, request_params: &Value) -> Value {
-    let connection_params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = match Client::connect(connection_params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };
@@ -75,8 +74,7 @@ pub fn execute_query_with_cancellation(
         _ => page,
     };
 
-    let connection_params = ConnectionParams::from_value(inner_params(request_params));
-    let mut client = match Client::connect(connection_params) {
+    let mut client = match connect_client(request_params) {
         Ok(client) => client,
         Err(error) => return error_response(id, error.code, &error.message),
     };

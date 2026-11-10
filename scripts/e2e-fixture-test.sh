@@ -173,7 +173,84 @@ else
   fail "manifest hides unsupported editing capabilities"
 fi
 
-echo "== 3. Typed values through plugin JSON-RPC =="
+echo "== 3. Trino session property persistence and cleanup =="
+session_result="$(python3 - "$PLUGIN_BIN" "$HOST" "$PORT" "$USER_NAME" <<'PY'
+import json, subprocess, sys
+
+binary, host, port, username = sys.argv[1:]
+connection = {
+    "driver": "trino", "host": host, "port": int(port),
+    "database": "memory", "username": username,
+    "password": None, "ssl_mode": None,
+}
+
+def start_plugin():
+    return subprocess.Popen(
+        [binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, bufsize=1,
+    )
+
+def query(proc, session_id, sql):
+    query_id = query.next_id
+    query.next_id += 1
+    request = {
+        "jsonrpc": "2.0", "id": query_id, "method": "execute_query",
+        "params": {
+            "params": connection, "query": sql,
+            "session_id": session_id,
+        },
+    }
+    proc.stdin.write(json.dumps(request) + "\n")
+    proc.stdin.flush()
+    response = json.loads(proc.stdout.readline())
+    if response.get("id") != query_id or "error" in response:
+        raise RuntimeError("query failed: " + json.dumps(response))
+    return response["result"]["rows"]
+
+query.next_id = 1
+property_name = "query_max_run_time"
+session_a = "fixture-session-a"
+session_b = "fixture-session-b"
+plugin = start_plugin()
+try:
+    default_rows = query(plugin, session_a, f"SHOW SESSION LIKE '{property_name}'")
+    default_value = default_rows[0][1]
+    other_session_rows = query(plugin, session_b, f"SHOW SESSION LIKE '{property_name}'")
+    if other_session_rows[0][1] != default_value:
+        raise RuntimeError("new session did not start with the Trino default")
+
+    query(plugin, session_a, "SET SESSION query_max_run_time = '10m'")
+    if query(plugin, session_a, f"SHOW SESSION LIKE '{property_name}'")[0][1] != "10m":
+        raise RuntimeError("SET SESSION did not persist to the next call")
+    if query(plugin, session_b, f"SHOW SESSION LIKE '{property_name}'")[0][1] != default_value:
+        raise RuntimeError("session properties leaked into a different session")
+
+    query(plugin, session_a, "RESET SESSION query_max_run_time")
+    if query(plugin, session_a, f"SHOW SESSION LIKE '{property_name}'")[0][1] != default_value:
+        raise RuntimeError("RESET SESSION did not clear the retained property")
+finally:
+    plugin.stdin.close()
+    plugin.wait(timeout=10)
+
+# Closing the owning plugin process must release its retained session state.
+plugin = start_plugin()
+try:
+    if query(plugin, session_a, f"SHOW SESSION LIKE '{property_name}'")[0][1] != default_value:
+        raise RuntimeError("session state survived after its plugin process closed")
+finally:
+    plugin.stdin.close()
+    plugin.wait(timeout=10)
+
+print("PASS")
+PY
+)"
+if [ "$session_result" = "PASS" ]; then
+  pass "SET, RESET, session isolation, and process-close cleanup"
+else
+  fail "Trino session property persistence and cleanup" "$session_result"
+fi
+
+echo "== 4. Typed values through plugin JSON-RPC =="
 typed="$(rpc_call execute_query '{"schema":"demo","query":"SELECT dec_col, big_col, arr_col, map_col, row_col, null_col FROM memory.demo.types_test"}')"
 if printf '%s\n' "$typed" | python3 -c '
 import json, sys
@@ -196,7 +273,7 @@ else
   fail "typed values preserve exact and nested values" "$typed"
 fi
 
-echo "== 4. Full response paging, ordering, and explicit offset =="
+echo "== 5. Full response paging, ordering, and explicit offset =="
 all_rows="$(rpc_call execute_query '{"schema":"demo","query":"SELECT n FROM many_rows ORDER BY n"}')"
 if printf '%s\n' "$all_rows" | python3 -c '
 import json, sys
@@ -232,7 +309,7 @@ else
   fail "explicit offset paging" "$page"
 fi
 
-echo "== 5. Federated query through plugin JSON-RPC =="
+echo "== 6. Federated query through plugin JSON-RPC =="
 federated="$(rpc_call execute_query '{"schema":"demo","query":"SELECT m.n, n.name FROM memory.demo.many_rows m JOIN tpch.sf1.nation n ON m.n = n.nationkey ORDER BY m.n"}')"
 if printf '%s\n' "$federated" | python3 -c '
 import json, sys
@@ -249,7 +326,7 @@ else
   fail "federated query across memory and tpch" "$federated"
 fi
 
-echo "== 6. Actionable errors and unsupported-method responses =="
+echo "== 7. Actionable errors and unsupported-method responses =="
 bad_connection="$(rpc_call test_connection '{}' 5433)"
 if printf '%s\n' "$bad_connection" | python3 -c '
 import json, sys
@@ -286,7 +363,7 @@ for method in explain_query insert_record update_record delete_record \
   check_rpc_error "$method returns unsupported-method response" "$method" '{}' '-32601'
 done
 
-echo "== 7. Cancellation notification through plugin JSON-RPC =="
+echo "== 8. Cancellation notification through plugin JSON-RPC =="
 if [ -n "${SKIP_CANCEL:-}" ]; then
   skip "plugin cancellation (SKIP_CANCEL set)"
 else
