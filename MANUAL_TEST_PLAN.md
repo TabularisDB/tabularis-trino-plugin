@@ -111,9 +111,12 @@ retains every digit and that nested values remain present.
 SELECT n FROM memory.demo.many_rows ORDER BY n
 ```
 
-Expected: 100,000 rows in ascending order. With a grid page size of 100, page
-1 starts at 1, page 2 starts at 101, and the last row is 100000. Move across
-several pages and check there are no gaps, duplicates, or out-of-order rows.
+Expected: rows in ascending order. With a grid page size of 100, page 1 starts
+at 1, page 2 starts at 101, and the last page (1000) ends at 100000. Move
+across several pages and check there are no gaps, duplicates, or out-of-order
+rows. Each page re-runs the query and only reads up to one row past the page,
+so the total page count is not shown until you reach the last page; **Next**
+stays enabled while more rows exist.
 
 **Federated query across catalogs:**
 
@@ -206,7 +209,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"execute_query","params":{"param
 ```
 
 Expected: a JSON-RPC success response with rows `n = 11` through `n = 15`,
-`total_rows` equal to `100000`, and `has_more` true.
+`total_rows` null, `has_more` true, and `query_info.fetch_stopped_early` true.
+The plugin stops reading once row 16 shows that more rows exist, so it does
+not download the remaining 99,984 rows.
 
 ## 9. Stop the fixture
 

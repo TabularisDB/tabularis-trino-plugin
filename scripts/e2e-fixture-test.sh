@@ -298,13 +298,16 @@ import json, sys
 try:
     result = json.load(sys.stdin)["result"]
     ok = result["rows"] == [[11], [12], [13], [14], [15]]
-    ok = ok and result["pagination"]["total_rows"] == 100000
+    # Collection stops once row 16 proves more rows exist, so the total is
+    # unknown rather than counted from a full download.
+    ok = ok and result["pagination"]["total_rows"] is None
     ok = ok and result["pagination"]["has_more"] is True
+    ok = ok and result["query_info"]["fetch_stopped_early"] is True
 except Exception:
     ok = False
 sys.exit(0 if ok else 1)
 '; then
-  pass "offset returns rows 11–15 with correct pagination metadata"
+  pass "offset returns rows 11–15 without buffering the full result"
 else
   fail "explicit offset paging" "$page"
 fi

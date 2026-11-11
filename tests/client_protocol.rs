@@ -59,7 +59,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use client::{Client, QueryCancellation};
+use client::{Client, QueryCancellation, RowWindow};
 use models::ConnectionParams;
 use serde_json::{json, Value};
 
@@ -1195,6 +1195,18 @@ fn execute_query_honors_an_explicit_offset() {
 
 #[test]
 fn query_cancellation_reaches_trino_and_returns_cancelled_error() {
+    assert_cancellation_reaches_trino(None);
+}
+
+#[test]
+fn paginated_query_cancellation_reaches_trino() {
+    assert_cancellation_reaches_trino(Some(RowWindow {
+        offset: 0,
+        limit: Some(100),
+    }));
+}
+
+fn assert_cancellation_reaches_trino(window: Option<RowWindow>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind cancellation server");
     let address = listener.local_addr().expect("server address").to_string();
     let (get_started_tx, get_started_rx) = mpsc::channel();
@@ -1244,7 +1256,7 @@ fn query_cancellation_reaches_trino_and_returns_cancelled_error() {
         })
         .expect("construct Trino client");
         client.set_cancellation(worker_cancellation);
-        client.run_query("SELECT n")
+        client.run_query_windowed("SELECT n", None, window)
     });
 
     get_started_rx
@@ -1268,10 +1280,17 @@ fn cancellation_during_statement_submission_cancels_after_trino_returns_next_uri
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind cancellation server");
     let address = listener.local_addr().expect("server address").to_string();
     let (submit_started_tx, submit_started_rx) = mpsc::channel();
+    let (cancel_requested_tx, cancel_requested_rx) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
         let (mut submit, _) = listener.accept().expect("accept statement");
         assert!(read_request(&mut submit).starts_with("POST /v1/statement "));
         submit_started_tx.send(()).expect("notify query test");
+        // Hold the POST response until cancellation was requested, so the
+        // query is still in submission when it is cancelled. Answering
+        // immediately let the worker race ahead and fetch the next page.
+        cancel_requested_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("cancellation should be requested during submission");
         write_response(
             &mut submit,
             &MockResponse::json(
@@ -1313,6 +1332,9 @@ fn cancellation_during_statement_submission_cancels_after_trino_returns_next_uri
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("statement should be submitted");
     cancellation.cancel().expect("mark query as cancelled");
+    cancel_requested_tx
+        .send(())
+        .expect("release the statement response");
     server.join().expect("cancellation server completes");
     let error = query
         .join()
@@ -1410,4 +1432,197 @@ fn stdio_cancel_notification_is_handled_while_execute_query_is_running() {
     assert!(plugin.wait().expect("plugin exits").success());
     reader.join().expect("stdout reader completes");
     server.join().expect("mock Trino server completes");
+}
+
+fn paged_query_params(address: &str, query: &str, limit: u64, page: u64) -> Value {
+    json!({
+        "params": {
+            "driver": "trino",
+            "host": format!("http://{address}"),
+            "database": "memory",
+            "username": "tester"
+        },
+        "query": query,
+        "limit": limit,
+        "page": page
+    })
+}
+
+#[test]
+fn paginated_query_stops_after_the_page_and_releases_the_trino_query() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({
+                "id": "q",
+                "columns": [{"name": "n", "type": "bigint"}],
+                "data": [[1], [2]],
+                "nextUri": "/v1/statement/q/1"
+            }),
+        ),
+        MockResponse::json(
+            "GET",
+            "/v1/statement/q/1",
+            json!({"data": [[3], [4]], "nextUri": "/v1/statement/q/2"}),
+        ),
+        // /v1/statement/q/2 is never fetched: the query is released instead.
+        MockResponse::raw("DELETE", "/v1/statement/q/2", 204, "No Content", ""),
+    ]);
+
+    let response = query_handler::execute_query(
+        json!(40),
+        &paged_query_params(&server.address, "SELECT n FROM big ORDER BY n", 2, 1),
+    );
+
+    let result = &response["result"];
+    assert_eq!(result["rows"], json!([[1], [2]]), "{response}");
+    assert_eq!(result["pagination"]["has_more"], true);
+    assert_eq!(result["pagination"]["total_rows"], Value::Null);
+    assert_eq!(result["query_info"]["fetch_stopped_early"], true);
+    let requests = server.finish();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].starts_with("DELETE /v1/statement/q/2 "));
+}
+
+#[test]
+fn windowed_collection_retains_only_rows_inside_the_window() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({
+                "columns": [{"name": "n", "type": "bigint"}],
+                "data": [[1], [2]],
+                "nextUri": "/v1/statement/q/1"
+            }),
+        ),
+        MockResponse::json(
+            "GET",
+            "/v1/statement/q/1",
+            json!({"data": [[3], [4]], "nextUri": "/v1/statement/q/2"}),
+        ),
+        MockResponse::json(
+            "GET",
+            "/v1/statement/q/2",
+            json!({"data": [[5], [6]], "nextUri": "/v1/statement/q/3"}),
+        ),
+        MockResponse::raw("DELETE", "/v1/statement/q/3", 204, "No Content", ""),
+    ]);
+    let mut client = server.client();
+
+    // Page 2 of size 2: rows 3 and 4. Row 5 proves more rows exist.
+    let result = client
+        .run_query_windowed(
+            "SELECT n FROM big ORDER BY n",
+            None,
+            Some(RowWindow {
+                offset: 2,
+                limit: Some(2),
+            }),
+        )
+        .expect("windowed query");
+
+    assert_eq!(result.rows, vec![json!([3]), json!([4])]);
+    assert_eq!(result.rows_seen, 6);
+    assert!(result.stopped_early);
+    server.finish();
+}
+
+#[test]
+fn paginated_query_reports_exact_total_when_trino_finishes_first() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({
+                "columns": [{"name": "n", "type": "bigint"}],
+                "data": [[1], [2]],
+                "nextUri": "/v1/statement/q/1"
+            }),
+        ),
+        MockResponse::json("GET", "/v1/statement/q/1", json!({"data": [[3]]})),
+    ]);
+
+    // Page 3 of size 2 is past the end of a 3-row result.
+    let response = query_handler::execute_query(
+        json!(41),
+        &paged_query_params(&server.address, "SELECT n FROM small ORDER BY n", 2, 3),
+    );
+
+    let result = &response["result"];
+    assert_eq!(result["rows"], json!([]), "{response}");
+    assert_eq!(result["pagination"]["total_rows"], 3);
+    assert_eq!(result["pagination"]["has_more"], false);
+    assert_eq!(result["query_info"]["fetch_stopped_early"], false);
+    server.finish();
+}
+
+#[test]
+fn paginated_write_statement_runs_to_completion() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({
+                "updateType": "INSERT",
+                "columns": [{"name": "rows", "type": "bigint"}],
+                "data": [[1], [2], [3]],
+                "nextUri": "/v1/statement/q/1"
+            }),
+        ),
+        MockResponse::json(
+            "GET",
+            "/v1/statement/q/1",
+            json!({"updateType": "INSERT", "updateCount": 3}),
+        ),
+    ]);
+
+    let response = query_handler::execute_query(
+        json!(42),
+        &paged_query_params(&server.address, "INSERT INTO t SELECT * FROM s", 1, 1),
+    );
+
+    let result = &response["result"];
+    assert_eq!(result["affected_rows"], 3, "{response}");
+    assert_eq!(result["rows"], json!([[1]]));
+    assert_eq!(result["query_info"]["fetch_stopped_early"], false);
+    let requests = server.finish();
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.starts_with("DELETE ")),
+        "write statements must not be released early"
+    );
+}
+
+#[test]
+fn unpaginated_query_still_collects_every_row() {
+    let server = MockServer::start(vec![
+        MockResponse::json(
+            "POST",
+            "/v1/statement",
+            json!({
+                "columns": [{"name": "n", "type": "bigint"}],
+                "data": [[1], [2]],
+                "nextUri": "/v1/statement/q/1"
+            }),
+        ),
+        MockResponse::json("GET", "/v1/statement/q/1", json!({"data": [[3]]})),
+    ]);
+    let params = json!({
+        "params": {
+            "driver": "trino",
+            "host": format!("http://{}", server.address),
+            "database": "memory",
+            "username": "tester"
+        },
+        "query": "SELECT n FROM small"
+    });
+
+    let response = query_handler::execute_query(json!(43), &params);
+
+    assert_eq!(response["result"]["rows"], json!([[1], [2], [3]]));
+    assert_eq!(response["result"]["pagination"], Value::Null);
+    server.finish();
 }

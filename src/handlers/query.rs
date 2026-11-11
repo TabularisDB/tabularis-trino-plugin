@@ -2,10 +2,16 @@
 //!
 //! `test_connection` submits a real `SELECT 1` request. `ping` currently
 //! returns null and falls back to `test_connection` in the host if needed.
+//!
+//! Paginated `execute_query` calls keep only the requested page. Each page
+//! request re-executes the SQL (Tabularis sends `limit`/`page` per page), and
+//! collection stops once a row past the page shows that more rows exist. The
+//! total row count is then unknown and reported as `null`; it is exact only
+//! when Trino finished returning rows within the scanned range.
 
 use serde_json::{json, Value};
 
-use crate::client::QueryCancellation;
+use crate::client::{QueryCancellation, RowWindow};
 use crate::handlers::connect_client;
 use crate::rpc::{error_response, not_implemented, ok_response};
 
@@ -80,30 +86,25 @@ pub fn execute_query_with_cancellation(
     };
     client.set_cancellation(cancellation);
     let schema = request_params.get("schema").and_then(Value::as_str);
-    let result = match client.run_query_with_schema(sql, schema) {
+    // Only the requested page is kept; see `Client::run_query_windowed`.
+    let window = (limit.is_some() || offset > 0).then_some(RowWindow { offset, limit });
+    let result = match client.run_query_windowed(sql, schema, window) {
         Ok(result) => result,
         Err(error) => return error_response(id, error.code, &error.message),
     };
 
-    let total_rows = result.rows.len() as u64;
-    let rows = result
-        .rows
-        .into_iter()
-        .skip(usize::try_from(offset).unwrap_or(usize::MAX))
-        .take(
-            limit
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(usize::MAX),
-        )
-        .collect::<Vec<_>>();
+    // An exact total is only known when Trino finished returning rows.
+    let total_rows = (!result.stopped_early).then_some(result.rows_seen);
     let pagination = limit.map(|page_size| {
         json!({
             "page": page,
             "page_size": page_size,
             "total_rows": total_rows,
-            "has_more": offset.saturating_add(page_size) < total_rows
+            "has_more": result.stopped_early
+                || offset.saturating_add(page_size) < result.rows_seen
         })
     });
+    let rows = result.rows;
 
     ok_response(
         id,
@@ -118,6 +119,7 @@ pub fn execute_query_with_cancellation(
                 "state": result.query_state,
                 "observed_states": result.observed_states,
                 "elapsed_time_ms": result.elapsed_time_ms,
+                "fetch_stopped_early": result.stopped_early,
                 "trino_stats": result.stats
             }
         }),
