@@ -113,7 +113,7 @@ The connection screenshot uses a local test account; the password is masked.
 | Database name | Default Trino catalog. Enable multiple database browsing to browse additional catalogs. |
 | Schema | Optional default schema for browsing and query context. |
 | Username | Trino user; defaults to `tabularis` when blank. With token or external authentication, leave it blank to use the user from the token. |
-| Password | Optional; password authentication requires HTTPS. With `authentication=token`, holds the access token. |
+| Password | Optional; password authentication requires HTTPS. Leave it blank for a Trino server without authentication, such as a local Docker cluster; Trino rejects passwords over plain HTTP. With `authentication=token`, holds the access token. |
 | SSL mode | Disabled, Preferred, Required, Verify CA, or Verify Identity. |
 | CA certificate | Optional PEM content or a path to a PEM file. |
 | Client certificate/key | Optional PEM content or file paths. Provide both when mutual TLS is required. |
