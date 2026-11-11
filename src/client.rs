@@ -293,8 +293,13 @@ impl Client {
                 let credentials = match password {
                     Some(password) => {
                         if endpoint.scheme() != "https" {
+                            // Trino itself rejects passwords over plain HTTP
+                            // ("Password not allowed for insecure authentication").
                             return Err(PluginError::invalid_params(
-                                "Trino password authentication requires HTTPS",
+                                "Trino password authentication requires HTTPS. If this Trino server \
+                                 has no authentication (for example a local Docker cluster), clear \
+                                 the Password field and keep only the username. Otherwise set an SSL \
+                                 mode or use an https:// host",
                             ));
                         }
                         let Some(username) = explicit_user.clone() else {

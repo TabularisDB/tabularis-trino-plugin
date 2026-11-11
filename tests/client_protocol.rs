@@ -392,6 +392,11 @@ fn rejects_password_authentication_over_plain_http() {
         Err(error) => error,
     };
     assert!(error.message.contains("requires HTTPS"));
+    assert!(
+        error.message.contains("clear the Password field"),
+        "error should tell unauthenticated users how to connect: {}",
+        error.message
+    );
 }
 
 #[test]
