@@ -58,6 +58,12 @@ across catalogs.
 - **Complete results** — Follow Trino's result-page links and preserve row
   order, including when a response page contains no rows. Support requested
   result limits and offsets.
+- **Bounded paging** — A grid page keeps only its own rows. The plugin stops
+  reading once one row past the page shows that more rows exist, then releases
+  the rest of the Trino query, so opening the first 100 rows of a large result
+  does not download or buffer the whole result. Each page re-runs the SQL; the
+  total row count is reported only when Trino finished within the rows read.
+  Write statements always run to completion.
 - **Cancellation** — Send cancellation to Trino through its client protocol
   when Tabularis cancels a running query.
 - **Query diagnostics** — Return Trino's query ID, final state, states observed
@@ -180,6 +186,11 @@ using **JSON-RPC 2.0 over stdio**:
 3. The plugin submits SQL to Trino's `/v1/statement` endpoint, follows each
    `nextUri` until the statement finishes, and sends an HTTP `DELETE` to cancel
    a running statement when requested.
+4. For a paginated request, rows outside the requested page are discarded as
+   they arrive. Once a row past the page has been read, the plugin sends
+   `DELETE` for the remaining `nextUri` and returns the page with `has_more`
+   true and `total_rows` null. Trino lists such queries as `USER_CANCELED`,
+   as it does when the Trino CLI pager is closed early.
 
 Catalog and schema context comes from each connection/request. Catalogs map to
 Tabularis databases, and Trino metadata visibility follows the connected

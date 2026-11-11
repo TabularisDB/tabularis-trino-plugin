@@ -78,6 +78,16 @@ struct CancellationHttpContext {
 impl QueryCancellation {
     pub fn cancel(&self) -> Result<(), PluginError> {
         self.cancelled.store(true, Ordering::SeqCst);
+        self.delete_current_query()
+    }
+
+    /// Release the tracked Trino query without marking it as cancelled by
+    /// the user, e.g. once a paginated request has all the rows it needs.
+    fn abandon(&self) -> Result<(), PluginError> {
+        self.delete_current_query()
+    }
+
+    fn delete_current_query(&self) -> Result<(), PluginError> {
         // Keep this lock through DELETE so the query worker cannot race us
         // into sending a second cancellation request for the same nextUri.
         let mut current_query = self
@@ -131,14 +141,46 @@ impl QueryCancellation {
     }
 }
 
+/// Rows a paginated request needs, as zero-based positions in the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowWindow {
+    pub offset: u64,
+    /// `None` keeps every row from `offset` on.
+    pub limit: Option<u64>,
+}
+
+impl RowWindow {
+    fn contains(&self, index: u64) -> bool {
+        index >= self.offset
+            && self
+                .limit
+                .is_none_or(|limit| index < self.offset.saturating_add(limit))
+    }
+
+    /// True once a row past the window has been seen, so `has_more` is known.
+    fn is_satisfied_by(&self, rows_seen: u64) -> bool {
+        self.limit
+            .is_some_and(|limit| rows_seen > self.offset.saturating_add(limit))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct QueryResult {
     /// Column names in the order reported by Trino.
     pub columns: Vec<String>,
     /// Trino type names aligned with `columns` for lossless value handling.
     pub column_types: Vec<Option<String>>,
-    /// Rows from every result page, in Trino's response order.
+    /// Rows in Trino's response order. With a `RowWindow`, only the rows
+    /// inside the window are kept.
     pub rows: Vec<Value>,
+    /// Number of rows Trino returned before collection ended, including rows
+    /// discarded because they were outside the window.
+    pub rows_seen: u64,
+    /// True when collection stopped before Trino finished because the window
+    /// was satisfied; `rows_seen` is then not the result's total row count.
+    pub stopped_early: bool,
+    /// Trino's update type (e.g. `INSERT`) for write statements.
+    pub update_type: Option<String>,
     /// Trino's update count, when the statement reports one.
     pub update_count: Option<u64>,
     /// Trino's query identifier and most recently observed execution state.
@@ -497,6 +539,22 @@ impl Client {
         sql: &str,
         schema: Option<&str>,
     ) -> Result<QueryResult, PluginError> {
+        self.run_query_windowed(sql, schema, None)
+    }
+
+    /// Like `run_query_with_schema`, but only keeps the rows inside `window`.
+    ///
+    /// Rows outside the window are discarded as Trino pages arrive. Once a
+    /// row past the window has been seen, the remaining Trino query is
+    /// released (`DELETE nextUri`) and `stopped_early` is set, so a small
+    /// grid page does not download or buffer the whole result. Write
+    /// statements (Trino reports an `updateType`) always run to completion.
+    pub fn run_query_windowed(
+        &mut self,
+        sql: &str,
+        schema: Option<&str>,
+        window: Option<RowWindow>,
+    ) -> Result<QueryResult, PluginError> {
         if sql.trim().is_empty() {
             return Err(PluginError::invalid_params("SQL query must not be empty"));
         }
@@ -554,7 +612,22 @@ impl Client {
                 self.cancel_query()?;
                 return Err(Self::cancelled_error());
             }
-            self.collect_page(&page, &mut result)?;
+            self.collect_page(&page, &mut result, window)?;
+            if next_url.is_some()
+                && result.update_type.is_none()
+                && window.is_some_and(|window| window.is_satisfied_by(result.rows_seen))
+            {
+                if let Err(error) = self.cancellation.abandon() {
+                    // The rows are already collected; Trino will expire the
+                    // abandoned query on its own if the release fails.
+                    eprintln!("could not release finished Trino query page: {error}");
+                }
+                result.stopped_early = true;
+                preserve_exact_values(&mut result);
+                result.elapsed_time_ms =
+                    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                return Ok(result);
+            }
             let Some(next_url) = next_url else {
                 preserve_exact_values(&mut result);
                 result.elapsed_time_ms =
@@ -745,7 +818,12 @@ impl Client {
         ""
     }
 
-    fn collect_page(&self, page: &Value, result: &mut QueryResult) -> Result<(), PluginError> {
+    fn collect_page(
+        &self,
+        page: &Value,
+        result: &mut QueryResult,
+        window: Option<RowWindow>,
+    ) -> Result<(), PluginError> {
         if result.query_id.is_none() {
             result.query_id = page.get("id").and_then(Value::as_str).map(str::to_string);
         }
@@ -798,8 +876,21 @@ impl Client {
             }
         }
 
+        if result.update_type.is_none() {
+            result.update_type = page
+                .get("updateType")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+
         if let Some(rows) = page.get("data").and_then(Value::as_array) {
-            result.rows.extend(rows.iter().cloned());
+            for row in rows {
+                let index = result.rows_seen;
+                result.rows_seen += 1;
+                if window.is_none_or(|window| window.contains(index)) {
+                    result.rows.push(row.clone());
+                }
+            }
         }
 
         if result.update_count.is_none() {
