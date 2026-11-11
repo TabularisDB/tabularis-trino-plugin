@@ -1280,10 +1280,17 @@ fn cancellation_during_statement_submission_cancels_after_trino_returns_next_uri
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind cancellation server");
     let address = listener.local_addr().expect("server address").to_string();
     let (submit_started_tx, submit_started_rx) = mpsc::channel();
+    let (cancel_requested_tx, cancel_requested_rx) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
         let (mut submit, _) = listener.accept().expect("accept statement");
         assert!(read_request(&mut submit).starts_with("POST /v1/statement "));
         submit_started_tx.send(()).expect("notify query test");
+        // Hold the POST response until cancellation was requested, so the
+        // query is still in submission when it is cancelled. Answering
+        // immediately let the worker race ahead and fetch the next page.
+        cancel_requested_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("cancellation should be requested during submission");
         write_response(
             &mut submit,
             &MockResponse::json(
@@ -1325,6 +1332,9 @@ fn cancellation_during_statement_submission_cancels_after_trino_returns_next_uri
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("statement should be submitted");
     cancellation.cancel().expect("mark query as cancelled");
+    cancel_requested_tx
+        .send(())
+        .expect("release the statement response");
     server.join().expect("cancellation server completes");
     let error = query
         .join()
